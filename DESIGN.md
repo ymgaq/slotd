@@ -557,172 +557,351 @@ The following are not current goals:
 The design goal is practical user-level command compatibility for a local
 single-node scheduler.
 
+## Supported Subset Strategy
+
+`slotd` is not trying to become a full Slurm reimplementation.
+
+The intended product is:
+
+- a Slurm-shaped scheduler for one personal machine
+- one local daemon
+- one local user
+- one local execution host
+- a deliberately limited subset of Slurm commands and options
+
+This has a few design consequences.
+
+First, compatibility should be strongest where individual users actually spend
+their time:
+
+- batch submission
+- interactive execution
+- allocation-based execution
+- queue inspection
+- accounting inspection
+- cancellation
+- per-job detail inspection
+- local resource inspection
+
+Second, features whose value depends primarily on multi-user or multi-node
+operation should not be implemented just because they exist in upstream Slurm.
+
+Third, the supported surface area should be explicit and stable enough that a
+user can tell which Slurm habits transfer directly and which do not.
+
+### Supported Commands
+
+The intended supported command set is:
+
+- `sbatch`
+- `srun`
+- `salloc`
+- `squeue`
+- `sacct`
+- `scancel`
+- `scontrol`
+- `sinfo`
+
+Within `scontrol`, the supported subset is intentionally narrow:
+
+- `show job`
+- `hold job`
+- `release job`
+- `update job`
+
+### Supported Core Options
+
+The common resource and execution model should center on:
+
+- `-J`, `--job-name`
+- `-p`, `--partition`
+- `-c`, `--cpus-per-task`
+- `-n`, `--ntasks`
+- `--mem`
+- `-t`, `--time`
+- `-G`, `--gpus`
+- `-D`, `--chdir`
+
+The command-specific high-value options are:
+
+- `sbatch`
+  - `--wrap`
+  - `-o`, `--output`
+  - `-e`, `--error`
+  - `-d`, `--dependency`
+  - `-a`, `--array`
+  - `--parsable`
+  - `-W`, `--wait`
+- `srun`
+  - `-o`, `--output`
+  - `-e`, `--error`
+  - `--immediate`
+  - `--pty`
+- `salloc`
+  - `--immediate`
+- `squeue`
+  - `--all`
+  - `-j`, `--jobs`
+  - `-u`, `--user`
+  - `-p`, `--partition`
+  - `-t`, `--states`
+  - `-o`, `--format`
+  - `-S`, `--sort`
+  - `-l`, `--long`
+  - `--noheader`
+- `sacct`
+  - `-j`, `--jobs`
+  - `-s`, `--state`
+  - `-S`, `--starttime`
+  - `-E`, `--endtime`
+  - `-u`, `--user`
+  - `-p`, `--partition`
+  - `-o`, `--format`
+  - `-P`, `--parsable2`
+  - `-n`, `--noheader`
+- `scancel`
+  - cancel by job ID
+  - `--signal`
+- `sinfo`
+  - `-p`, `--partition`
+  - `-N`, `--Node`
+  - `-l`, `--long`
+  - `-o`, `--format`
+  - `--noheader`
+
+### Supported Near-Term Extensions
+
+The next useful additions within this subset are:
+
+- `sbatch --export`
+- `sbatch --export-file`
+- `sbatch --open-mode`
+- `sbatch --signal`
+- `sbatch --begin`
+- `sbatch --exclusive`
+- `srun --cpu-bind`
+- `srun --label`
+- `srun --unbuffered`
+- `squeue --start`
+- shared `--constraint` support across `sbatch`, `srun`, and `salloc`
+
+These remain compatible with the single-user, single-host model and directly
+improve local experimentation, reproducibility, and observability.
+
+## Features We Should Not Add
+
+The following features should be treated as explicitly out of scope unless the
+product definition changes.
+
+### Multi-User And Cluster Administration Features
+
+- `sacctmgr`
+- `sreport`
+- `sshare`
+- `sprio`
+- account hierarchy management
+- fairshare configuration
+- QoS policy management
+- reservation administration
+
+These are mainly valuable in shared clusters. They add substantial conceptual
+surface area without improving the personal-machine workflow.
+
+### Multi-Node And Federation Features
+
+- true multi-node allocations
+- `slurmctld` / `slurmd` role separation
+- federation
+- `--clusters`
+- remote launch protocols
+- topology-aware network scheduling
+- cross-node task placement semantics
+
+These would fundamentally change the architecture and should not be approached
+incrementally under the current product scope.
+
+### Low-Value Slurm Surface For This Product
+
+- `sbcast`
+- `strigger`
+- `sdiag`
+- `sh5util`
+- `sview`
+- `scrun`
+- full `sattach`
+- full `scrontab`
+
+Some of these may be useful in full Slurm deployments, but they are not core to
+local batch, interactive, and inspection workflows on one machine.
+
+### Options We Should Not Implement
+
+The following option families should remain unsupported unless there is a clear
+single-node use case that justifies them:
+
+- `--account`
+- `--qos`
+- `--reservation`
+- `--licenses`
+- `--wckey`
+- `--mcs-label`
+- `--clusters`
+- `--nodes`
+- `--nodelist`
+- `--exclude`
+- `--ntasks-per-node`
+- `--ntasks-per-socket`
+- `--ntasks-per-core`
+- `--gpus-per-node`
+- `--gpus-per-socket`
+- `--gpus-per-task`
+- `--gres`
+- `--tres-*`
+- burst buffer options
+- power management options
+- OCI / container integration options
+- federation / sibling options
+
+The rule is simple: if an option is mainly meaningful because Slurm is managing
+many nodes, many users, or many administrative domains, it should not be in the
+target subset.
+
 ## Roadmap
 
-The roadmap should follow compatibility gaps, not historical implementation
-order.
+The roadmap should follow the chosen single-user subset, not upstream Slurm's
+full command surface.
 
-### Phase 1: Fix the Core Semantic Gaps
+### Phase 0: Freeze The Product Boundary
 
-1. make `srun` foreground and exit-code-preserving by default
-2. add `srun --immediate` behavior that matches Slurm expectations
-3. add `sbatch` options that materially affect daily usage
-4. add `squeue` filtering by user, jobs, partition, and states
-5. add `sacct` time-range and format selection basics
-
-This phase matters most because it closes the biggest mismatch between command
-names and actual behavior.
-
-### Phase 2: Align Defaults and Output
-
-1. move default `sbatch` output toward `slurm-%j.out`
-2. add output pattern substitution such as `%j` and `%x`
-3. add `--noheader` and `--format` to `squeue`, `sacct`, and `sinfo`
-4. align state abbreviations and `NODELIST(REASON)` reporting more closely with Slurm
-5. improve `ExitCode` formatting for signal-based and cancelled jobs
-
-This phase makes the tools feel right to existing Slurm users.
-
-### Phase 3: Expand the Data Model
-
-1. add richer job states such as `COMPLETING`, `TIMEOUT`, and `OUT_OF_MEMORY`
-2. store state reasons separately from terminal state
-3. record time limits, signal outcomes, and submission host metadata
-4. improve recovery to preserve more accurate final states
-
-This phase improves correctness and enables better CLI parity.
-
-### Phase 4: Expand Slurm Surface Area
-
-1. support `--wrap` and `--wait` for `sbatch`
-2. support `-D/--chdir`
-3. add `-n/--ntasks` and basic task metadata handling
-4. add multiple configured partitions
-5. add `salloc`
-
-This phase broadens normal user workflows without requiring distributed design.
-
-### Phase 5: Add Higher-Cost Features
-
-1. add job dependencies
-2. add array jobs
-3. add cgroup v2 enforcement
-4. add more detailed accounting fields
-5. consider `scontrol show job` style inspection
-
-These features are valuable, but they should follow the interface and semantic
-alignment work above.
-
-### Phase 6: Make `srun` Feel Like `srun`
-
-1. make foreground `srun` use inherited stdio by default when output is not redirected
-2. support `--pty` as an interactive foreground mode
-3. allow `srun` inside a running allocation to behave like a local job step
-4. improve `squeue`, `sacct`, and `sinfo` format handling to accept a useful `%`-style subset
-5. improve detailed inspection output to include TRES-style resource summaries
-
-This phase matters because `srun` is the most visible day-to-day command and the
-main place where Slurm users notice semantic drift immediately.
-
-### Phase 7: Separate Job and Step Semantics
-
-1. introduce an explicit step model instead of treating every foreground command as just another job
-2. record allocation-backed `srun` executions as steps tied to a parent job or allocation
-3. assign step IDs rather than hardcoding a single `SLURM_STEP_ID`
-4. expose job and step relationships in `sacct` and `scontrol`
-5. define how cancellation should behave for a whole job versus one step
+1. document the supported command set
+2. document the supported option families
+3. document explicit non-goals and excluded Slurm features
+4. define one shared resource model across `sbatch`, `srun`, and `salloc`
+5. stop adding ad hoc options outside that model
 
 Completion criteria:
 
-- multiple `srun` calls inside one `salloc` session are recorded distinctly
-- accounting no longer loses the relationship between allocation and step execution
-- `scontrol show job` can explain parent and child execution context
+- the project has a stable definition of its intended Slurm subset
+- future compatibility work can be judged against an explicit scope boundary
 
-### Phase 8: Finish Runtime Enforcement
+### Phase 1: Stabilize The Existing Core Commands
 
-1. make cgroup v2 setup rules explicit and reliable
-2. enforce memory limits consistently and report OOM outcomes with high confidence
-3. improve CPU quota behavior so it matches requested CPU shape more closely
-4. bring foreground allocation-backed execution under the same enforcement rules
-5. define cleanup behavior for failed or partially configured cgroups
-
-Completion criteria:
-
-- `sbatch`, `salloc`, and interactive `srun` all use one consistent enforcement model
-- OOM conditions become stable `OUT_OF_MEMORY` outcomes instead of generic failures
-- enabling cgroup enforcement yields deterministic behavior rather than best-effort behavior
-
-### Phase 9: Improve Recovery and Restart Semantics
-
-1. make adopted running jobs recover to more accurate terminal states after daemon restart
-2. preserve timeout and cancellation behavior across daemon restart
-3. detect and clean up orphaned process groups and orphaned cgroups more safely
-4. reduce cases where restart forces a terminal job into generic `FAILED`
-5. make allocation-backed foreground jobs recover more coherently
+1. make `sbatch`, `srun`, and `salloc` interpret common resource flags consistently
+2. keep `srun` foreground and exit-code-preserving by default
+3. keep `salloc` allocation-first and shell-friendly
+4. stabilize `squeue`, `sacct`, `scontrol show job`, and `sinfo` default output
+5. ensure `#SBATCH` parsing and precedence rules are documented and predictable
 
 Completion criteria:
 
-- restart no longer turns a large fraction of active jobs into generic `FAILED`
-- adopted jobs keep more faithful final state and reason information
-- queue state remains coherent without manual intervention after daemon restart
+- the existing command set is coherent enough for day-to-day local use
+- users do not have to remember command-specific quirks for the same resource flags
 
-### Phase 10: Finish Output and CLI Compatibility
+### Phase 1.5: Reconcile Existing Behavior With The Intended Subset
 
-1. extend `%`-style `--format` coverage for `squeue`, `sacct`, and `sinfo`
-2. align field widths, names, and right-alignment behavior more closely with Slurm defaults
-3. improve reason text, `NODELIST(REASON)`, and array display behavior
-4. add more high-value fields such as `Submit`, `Start`, `End`, `ReqTRES`, `AllocTRES`, and `WorkDir`
-5. reduce remaining custom output behaviors where Slurm conventions are practical
+This phase exists to correct already-implemented behavior that is either too far
+from Slurm semantics or unnecessarily broad for the personal-machine subset.
 
-Completion criteria:
+1. fix `sbatch` precedence so it matches the intended order
+   - CLI options
+   - environment
+   - `#SBATCH`
+   - built-in defaults
+2. narrow `srun` behavior so it feels like one command with predictable foreground semantics rather than multiple hidden execution modes
+3. add `scancel --signal` and treat it as part of the core subset rather than an optional enhancement
+4. decide whether `scontrol hold/release/update` remains part of the supported subset or is reduced to a smaller stable surface
+5. decide whether explicit job priority remains part of the product
+6. keep array jobs and step tracking only to the extent they improve local usability, not to chase full Slurm internal parity
+7. remove or simplify behaviors whose primary purpose is shared-cluster scheduling rather than single-user local execution
 
-- common `-o/--format` usage from existing Slurm habits works with little or no relearning
-- default output looks recognizably Slurm-like for queue, accounting, and node inspection commands
+Design guidance for this phase:
 
-### Phase 11: Add Minimal Management Operations
-
-1. add a minimal `scontrol update job` subset
-2. add hold and release semantics for pending jobs
-3. define mutable versus immutable job fields after submission
-4. expose management actions in a way that matches Slurm naming and expectations
-5. keep state transitions explicit rather than relying on undocumented side effects
-
-Completion criteria:
-
-- users can hold, release, and lightly update jobs without editing the database or restarting the daemon
-- management operations preserve queue consistency and state reason correctness
-
-### Phase 12: Improve Scheduler Quality
-
-1. move beyond strict FIFO where it creates starvation in the presence of arrays or long allocations
-2. account for dependency-heavy and array-heavy workloads more fairly
-3. make partition admission and pending reasons more predictable under mixed workloads
-4. prepare the scheduler internals for later priority support without rewriting persistence
-5. keep policy changes observable through queue reason and accounting output
+- fix incompatible behavior before adding more compatible-looking surface area
+- prefer deleting or narrowing weakly justified behavior over preserving it for its own sake
+- if a feature is kept, it should either improve local usability directly or strengthen the supported Slurm subset
+- if a feature is kept under the same name as Slurm, its behavior should not be surprisingly different
 
 Completion criteria:
 
-- array submissions do not starve unrelated short jobs indefinitely
-- pending reasons remain understandable even under mixed workloads
-- the scheduler remains simple, but not brittle
+- the most user-visible semantic mismatches in existing commands are corrected
+- features that do not justify their maintenance cost in the single-user model are either removed, narrowed, or explicitly demoted
+- the project no longer carries ambiguous features that are neither clearly supported nor clearly out of scope
+
+### Phase 2: Add Reproducibility And Job-Control Essentials
+
+1. add `scancel --signal`
+2. add `sbatch --export`
+3. add `sbatch --export-file`
+4. add `sbatch --open-mode=append|truncate`
+5. add `sbatch --signal`
+6. add `squeue --start`
+
+Completion criteria:
+
+- users can control shutdown behavior cleanly
+- users can make job environments more reproducible
+- users can reason about waiting jobs more easily
+
+### Phase 3: Add High-Value Single-Node Placement Controls
+
+1. add shared `--constraint` support to `sbatch`, `srun`, and `salloc`
+2. add `srun --cpu-bind`
+3. improve `sinfo -l`
+4. stabilize `scontrol update job` for `JobName`, `Partition`, `TimeLimit`, and `Priority`
+5. keep these controls faithful to the single-host model rather than emulating multi-node behavior
+
+Completion criteria:
+
+- users can target local hardware characteristics intentionally
+- CPU-heavy local runs can be made more stable and predictable
+- post-submission adjustments remain limited and understandable
+
+### Phase 4: Add Convenience Features That Help Daily Workflows
+
+1. add `sbatch --begin`
+2. add `sbatch --exclusive`
+3. add `srun --label`
+4. add `srun --unbuffered`
+5. improve array display and accounting polish where it helps local workflows
+
+Completion criteria:
+
+- common personal-machine workflows become smoother without widening scope
+- convenience features do not require a redesign of the scheduler model
+
+### Phase 5: Add Optional Extensions Only If Real Demand Appears
+
+1. consider `--requeue`
+2. consider lightweight notification support
+3. consider a minimal `sstat`-like running-statistics view
+4. consider a narrow `sattach`-like capability only if needed for local debugging
+5. reject additions that mostly serve shared-cluster administration
+
+Completion criteria:
+
+- every feature in this phase has a demonstrated local-user need
+- the product remains a focused personal-machine scheduler rather than drifting toward full Slurm
 
 ## Next Implementation Order
 
 The recommended order for future work is:
 
-1. Phase 7
-2. Phase 8
-3. Phase 9
-4. Phase 10
-5. Phase 11
-6. Phase 12
+1. Phase 0
+2. Phase 1
+3. Phase 1.5
+4. Phase 2
+5. Phase 3
+6. Phase 4
+7. Phase 5
 
 This order is intentional.
 
-The internal execution model should be stabilized before further polishing CLI
-output, because output compatibility depends on step/accounting correctness.
-Recovery should also improve before adding more management features, otherwise
-administrative operations will rest on unstable runtime state.
+The supported subset should be frozen first so that implementation work does not
+expand the surface area accidentally. After that, the existing commands should
+be made coherent before adding new options. Existing incompatible or weakly
+justified behavior should be reconciled before expanding the surface further.
+Reproducibility, shutdown control, and local observability come before
+convenience features.
 
 ## Final Recommendation
 
