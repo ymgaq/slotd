@@ -37,7 +37,11 @@ impl Runner {
 
     pub fn launch(&mut self, store: &Store, job: &JobRecord) -> Result<()> {
         let stdout = File::create(&job.stdout_path)?;
-        let stderr = File::create(&job.stderr_path)?;
+        let stderr = if job.stderr_path == job.stdout_path {
+            stdout.try_clone()?
+        } else {
+            File::create(&job.stderr_path)?
+        };
         let assigned_gpu_ids = if job.partition == "gpu" {
             store.allocate_gpu_ids(job.requested_gpus)?
         } else {

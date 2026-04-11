@@ -11,7 +11,10 @@ use crate::daemon;
 use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, SubmitRequest};
-use crate::output::{parse_sacct_fields, print_sacct_jobs, print_sinfo, print_squeue_jobs};
+use crate::output::{
+    parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs, print_sinfo,
+    print_squeue_jobs,
+};
 use crate::sbatch::{parse_directives, parse_mem_mb};
 
 #[derive(Debug, Parser)]
@@ -30,7 +33,7 @@ enum Commands {
     Squeue(SqueueArgs),
     Sacct(SacctArgs),
     Scancel(ScancelArgs),
-    Sinfo,
+    Sinfo(SinfoArgs),
 }
 
 #[derive(Debug, Args)]
@@ -76,6 +79,8 @@ pub struct SqueueArgs {
     user: Option<String>,
     #[arg(short = 'p', long = "partition", value_delimiter = ',')]
     partitions: Option<Vec<String>>,
+    #[arg(short = 'o', long = "format")]
+    format: Option<String>,
     #[arg(long = "noheader")]
     noheader: bool,
 }
@@ -126,6 +131,16 @@ pub struct SrunArgs {
     command: Vec<String>,
 }
 
+#[derive(Debug, Args)]
+pub struct SinfoArgs {
+    #[arg(short = 'p', long = "partition", value_delimiter = ',')]
+    partitions: Option<Vec<String>>,
+    #[arg(short = 'o', long = "format")]
+    format: Option<String>,
+    #[arg(long = "noheader")]
+    noheader: bool,
+}
+
 impl Cli {
     pub fn run(self) -> Result<()> {
         let config = AppConfig::load();
@@ -136,7 +151,7 @@ impl Cli {
             Commands::Squeue(args) => run_squeue(config, args),
             Commands::Sacct(args) => run_sacct(config, args),
             Commands::Scancel(args) => run_scancel(config, args),
-            Commands::Sinfo => run_sinfo(config),
+            Commands::Sinfo(args) => run_sinfo(config, args),
         }
     }
 }
@@ -326,6 +341,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
 }
 
 fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
+    let fields = parse_squeue_fields(args.format.as_deref()).map_err(SlotdError::from)?;
     let state_filter = if let Some(values) = args.states {
         Some(parse_states(values)?)
     } else if args.all {
@@ -344,7 +360,7 @@ fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
         },
     )? {
         Response::Jobs { jobs } => {
-            print_squeue_jobs(&config, &jobs, args.noheader);
+            print_squeue_jobs(&config, &jobs, &fields, args.noheader);
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -404,10 +420,12 @@ fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
     }
 }
 
-fn run_sinfo(config: AppConfig) -> Result<()> {
+fn run_sinfo(config: AppConfig, args: SinfoArgs) -> Result<()> {
+    let fields = parse_sinfo_fields(args.format.as_deref()).map_err(SlotdError::from)?;
     match send_request(&config, &Request::NodeInfo)? {
         Response::NodeInfo { info } => {
-            print_sinfo(&config, &info);
+            let partitions = filter_partitions(info.partitions, args.partitions.as_deref());
+            print_sinfo(&config, &partitions, &fields, args.noheader);
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -442,7 +460,7 @@ fn replay_srun_output(job: &JobRecord, replay_stdout: bool, replay_stderr: bool)
             print!("{stdout}");
         }
     }
-    if replay_stderr {
+    if replay_stderr && job.stderr_path != job.stdout_path {
         let stderr = fs::read_to_string(&job.stderr_path).unwrap_or_default();
         if !stderr.is_empty() {
             eprint!("{stderr}");
@@ -522,6 +540,20 @@ fn parse_time_filter(value: &str) -> Result<i64> {
     Err(SlotdError::from(format!(
         "unsupported time format: {value}"
     )))
+}
+
+fn filter_partitions(
+    partitions: Vec<crate::job::PartitionInfo>,
+    filters: Option<&[String]>,
+) -> Vec<crate::job::PartitionInfo> {
+    partitions
+        .into_iter()
+        .filter(|partition| {
+            filters
+                .map(|filters| filters.iter().any(|filter| filter == &partition.name))
+                .unwrap_or(true)
+        })
+        .collect()
 }
 
 fn parse_datetime_parts(value: &str) -> Option<(i32, u32, u32, u32, u32, u32)> {

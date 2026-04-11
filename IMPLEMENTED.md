@@ -2,17 +2,19 @@
 
 ## Overview
 
-This document summarizes the behavior that is implemented in the repository today.
+This document summarizes the behavior implemented in the repository today.
 It is intentionally narrower than [DESIGN.md](/home/yu_yamaguchi/workspace/slotd/DESIGN.md).
-`DESIGN.md` describes the target architecture, while this file records the current MVP.
+`DESIGN.md` describes target direction and roadmap, while this file records the
+current code behavior.
 
 At this stage, `slotd` is a single-binary Rust application that provides:
 
 - a local daemon
 - batch job submission
-- command submission via `srun`
+- foreground command execution via `srun`
 - partition-aware scheduling for `cpu` and `gpu`
 - queue inspection
+- accounting inspection
 - job cancellation
 - single-node resource display
 - SQLite-backed job persistence
@@ -22,7 +24,8 @@ At this stage, `slotd` is a single-binary Rust application that provides:
 The current binary supports these subcommands:
 
 - `slotd daemon`
-- `slotd sbatch <script>`
+- `slotd sbatch [options] <script>`
+- `slotd sbatch --wrap <command>`
 - `slotd srun [options] -- <command...>`
 - `slotd squeue`
 - `slotd sacct`
@@ -39,7 +42,7 @@ The CLI also supports Slurm-like command aliases through `argv[0]` dispatch for:
 - `sinfo`
 
 This means a symlinked executable can behave like separate commands, although the
-repository currently builds a single `slotd` binary.
+repository still builds a single `slotd` binary.
 
 ## Runtime Layout
 
@@ -51,8 +54,6 @@ Paths:
 - SQLite database: `var/lib/state.db`
 - per-job directory: `var/lib/jobs/<job_id>/`
 - job script: `var/lib/jobs/<job_id>/script.sh`
-- stdout log: `var/lib/jobs/<job_id>/stdout.log`
-- stderr log: `var/lib/jobs/<job_id>/stderr.log`
 
 The root directory can be changed with the `SLOTD_ROOT` environment variable.
 
@@ -77,7 +78,7 @@ The currently implemented job states are:
 State behavior:
 
 - `sbatch` inserts a new job as `PENDING`
-- `srun` can insert a command job and start it immediately when resources are free
+- `srun` inserts a command job and waits for completion by default
 - the daemon scheduler starts a pending job when enough reserved resources are available
 - once spawned, the job becomes `RUNNING`
 - an exit code of `0` becomes `COMPLETED`
@@ -105,7 +106,7 @@ Resource defaults:
 
 - total CPUs: detected from `std::thread::available_parallelism()`
 - total memory: fixed at `16384 MB`
-- total GPUs: `SLOTD_GPU_COUNT`, default `1`
+- total GPUs: derived from `SLOTD_GPU_COUNT` or `nvidia-smi`
 
 ## Resource Model
 
@@ -115,21 +116,19 @@ Implemented behavior:
 
 - `sbatch --cpus-per-task` sets requested CPUs
 - `sbatch --mem` sets requested memory in MB
-- `sbatch --partition` selects the active partition for the current machine
+- `sbatch --partition` selects a configured partition
 - `sbatch --gpus` sets requested GPU slots
 - `srun --cpus-per-task` sets requested CPUs
 - `srun --mem` sets requested memory in MB
-- `srun --partition` selects the active partition for the current machine
+- `srun --partition` selects a configured partition
 - `srun --gpus` sets requested GPU slots
-- `sinfo` reports total and allocated reserved resources
-- `sinfo` marks the default partition with `*`
-- `sinfo` shows `N/A` for CPU-partition `GRES_USED`
+- `sinfo` reports partition state and GRES-style usage
 - jobs are admitted only if requested resources fit within remaining reserved capacity
 
 Partition behavior:
 
-- if GPUs are detected or configured, the machine exposes a single `gpu` partition
-- if no GPUs are available, the machine exposes a single `cpu` partition
+- if no GPUs are available, only `cpu` is exposed
+- if GPUs are available, both `cpu` and `gpu` are exposed
 - `cpu` jobs must request `0` GPUs
 - `gpu` jobs can request GPU slots
 - if `gpu` is selected without an explicit GPU count, the default is `1`
@@ -146,40 +145,61 @@ Not implemented yet:
 
 `sbatch` currently works as follows:
 
-- reads the target script from disk
+- reads the target script from disk, or accepts `--wrap`
 - stores the script body in the job directory as `script.sh`
-- records the current working directory as the job working directory
+- records the submission working directory, or `--chdir` if provided
 - stores the requested resource values
 - derives the default job name from the input script file name
+- prints `Submitted batch job <id>` by default
+- prints just `<id>` when `--parsable` is used
 
 Supported CLI options:
 
-- `--job-name`
-- `--partition`
-- `--cpus-per-task`
+- `--wrap`
+- `-J`, `--job-name`
+- `-p`, `--partition`
+- `-c`, `--cpus-per-task`
 - `--mem`
-- `--gpus`
-- `--output`
-- `--error`
+- `-G`, `--gpus`
+- `-o`, `--output`
+- `-e`, `--error`
+- `-D`, `--chdir`
+- `--parsable`
 
 Supported `#SBATCH` directives in script contents:
 
-- `--job-name`
-- `--partition`
-- `--cpus-per-task`
+- `-J`, `--job-name`
+- `-p`, `--partition`
+- `-c`, `--cpus-per-task`
 - `--mem`
-- `--gpus`
-- `--output`
-- `--error`
+- `-G`, `--gpus`
+- `-o`, `--output`
+- `-e`, `--error`
+- `-D`, `--chdir`
+
+Directive parsing behavior:
+
+- only `#SBATCH` lines in the initial comment block are interpreted
+- once the first executable line is reached, later `#SBATCH` lines are ignored
 
 Precedence:
 
 - explicit CLI options override `#SBATCH` directives
 - `#SBATCH` directives override built-in defaults
 
+Currently implemented output path behavior:
+
+- default stdout path is `slurm-%j.out`
+- if `--error` is not specified, stderr is sent to the same file as stdout
+- output patterns currently support `%j`, `%x`, `%u`, `%N`, and `%%`
+
 Not implemented yet:
 
-- partitions, accounts, priorities, dependencies, arrays
+- dependencies
+- arrays
+- accounts
+- priorities
+- `--wait`
 
 ## Command Submission
 
@@ -189,18 +209,20 @@ Not implemented yet:
 - builds a small shell script wrapper internally
 - submits the command as a scheduler-managed job
 - records the command string in the job table for display in `squeue`
-- starts the job immediately if resources are currently available
-- otherwise leaves it queued as `PENDING`
+- waits for job completion by default
+- returns the job exit code through the `slotd` process exit code
+- replays captured output to the caller after completion when default log paths are used
 
 Supported options:
 
-- `--job-name`
-- `--partition`
-- `--cpus-per-task`
+- `-J`, `--job-name`
+- `-p`, `--partition`
+- `-c`, `--cpus-per-task`
 - `--mem`
-- `--gpus`
-- `--output`
-- `--error`
+- `-G`, `--gpus`
+- `-o`, `--output`
+- `-e`, `--error`
+- `-D`, `--chdir`
 - `--immediate`
 
 Current `--immediate` behavior:
@@ -211,7 +233,8 @@ Current `--immediate` behavior:
 Not implemented yet:
 
 - interactive stdio streaming back to the caller
-- synchronous foreground waiting semantics like full Slurm `srun`
+- `--pty`
+- task and step semantics comparable to full Slurm `srun`
 
 ## Job Execution
 
@@ -222,8 +245,8 @@ Implemented behavior:
 - the stored script path is executed with `/bin/bash`
 - the job runs in the recorded submission working directory
 - stdin is closed
-- stdout and stderr are redirected to per-job log files by default
-- `--output` and `--error` can override the default log destinations
+- stdout and stderr are redirected to configured output files
+- if stdout and stderr resolve to the same path, one file is shared for both streams
 - the child process is started in a dedicated session via `setsid()`
 - the daemon tracks the child in memory while it is running
 
@@ -271,13 +294,15 @@ Implemented request types:
 - submit command job
 - list jobs for queue display
 - list jobs for accounting display
-- cancel job
+- get a single job by ID
+- cancel a job
 - query node info
 
 Implemented response types:
 
 - submitted job ID
 - job list
+- single job record
 - cancelled job ID
 - node info payload
 - error message
@@ -290,32 +315,53 @@ Current behavior:
 
 - by default only active jobs are shown
 - `--all` shows historical jobs as well
-- `--states` filters by requested states
+- `-t`, `--states` filters by requested states
+- `-j`, `--jobs` filters by job ID
+- `-u`, `--user` filters by user
+- `-p`, `--partition` filters by partition
+- `-o`, `--format` selects a supported field list
+- `--noheader` removes the header line
 
-Current columns:
+Default columns:
 
 - `JOBID`
-- `PARTITIO`
+- `PARTITION`
 - `NAME`
 - `USER`
 - `ST`
 - `TIME`
 - `NODELIST(REASON)`
 
+Supported `squeue --format` fields:
+
+- `JobID`
+- `Partition`
+- `Name` / `JobName`
+- `User`
+- `State` / `ST`
+- `Time` / `Elapsed`
+- `Reason` / `NodeList(Reason)`
+
 Notes:
 
-- the default intent now matches Slurm more closely than the earlier implementation
 - state uses short codes such as `PD`, `R`, `CD`, `F`, `CA`
+- `NODELIST(REASON)` shows hostname for running and completed jobs, and a simple reason token for others
 
 ### `sacct`
 
 Current behavior:
 
 - used to inspect current and historical jobs
-- `-j/--jobs` filters by job ID
-- `-s/--state` filters by job state
+- `-j`, `--jobs` filters by job ID
+- `-s`, `--state` filters by job state
+- `-S`, `--starttime` filters by lower time bound
+- `-E`, `--endtime` filters by upper time bound
+- `-u`, `--user` filters by user
+- `-p`, `--partition` filters by partition
+- `-o`, `--format` selects a supported field list
+- `-n`, `--noheader` removes the header line
 
-Current columns:
+Default columns:
 
 - `JobID`
 - `Partition`
@@ -324,22 +370,43 @@ Current columns:
 - `State`
 - `ExitCode`
 
+Supported `sacct --format` fields:
+
+- `JobID`
+- `JobName`
+- `Partition`
+- `User`
+- `State`
+- `ExitCode`
+- `Elapsed`
+
+Formatting notes:
+
+- output columns are width-aligned for the human-readable default mode
+- `ExitCode` is currently rendered as `<code>:0`
+
 ### `sinfo`
 
-Current fields:
+Current behavior:
 
-- partition name
-- hostname
-- partition state
-- GRES-style GPU usage string
-- total CPUs
-- allocated CPUs
-- total memory in MB
-- allocated memory in MB
-- total GPUs
-- allocated GPUs
-- running job count
-- pending job count
+- reports current single-node partition state
+- `-p`, `--partition` filters by partition
+- `-o`, `--format` selects a supported field list
+- `--noheader` removes the header line
+
+Default columns:
+
+- `PARTITION`
+- `HOSTNAMES`
+- `STATE`
+- `GRES_USED`
+
+Supported `sinfo --format` fields:
+
+- `Partition`
+- `Hostnames`
+- `State`
+- `GresUsed`
 
 ## Recovery Behavior
 
@@ -367,14 +434,20 @@ The repository includes a systemd unit template at:
 
 - [packaging/systemd/slotd.service](/home/yu_yamaguchi/workspace/slotd/packaging/systemd/slotd.service)
 
-It is a packaging stub only. The application currently runs against local `var/`
+It is still a packaging stub. The application currently runs against local `var/`
 paths by default rather than `/run/slotd` and `/var/lib/slotd`.
 
 ## Current Limitations
 
 The following planned features are not implemented yet:
 
-- full Slurm-like `squeue` and `sacct` option coverage
+- real-time `srun` stdio streaming
+- `srun --pty`
+- richer terminal states such as `COMPLETING`, `TIMEOUT`, `OUT_OF_MEMORY`
+- full Slurm `--format` syntax and field coverage
+- `sbatch --wait`
+- dependency handling
+- array jobs
 - structured config file
 - `--json` output
 - cgroup v2 resource enforcement
@@ -383,13 +456,13 @@ The following planned features are not implemented yet:
 
 ## Verified Behavior
 
-The current MVP has been smoke-tested for the following flow:
+The repository is currently verified by unit tests for:
 
-1. start the daemon
-2. submit a shell script with `sbatch`
-3. observe the job in `squeue`
-4. confirm execution output in `stdout.log`
-5. inspect node usage with `sinfo`
+- argv[0] command alias dispatch
+- time-filter parsing for `sacct`
+- `#SBATCH` parsing rules
+- supported `--format` field parsing for `squeue`, `sacct`, and `sinfo`
+- output pattern expansion for `%j`, `%x`, `%u`, `%N`, and `%%`
 
-This means the project is already at the stage of a working local prototype, not
-just a scaffold.
+This means the project is already beyond a scaffold and into a working local prototype,
+but some end-to-end runtime behavior is still validated mainly by manual testing.

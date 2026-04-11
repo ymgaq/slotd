@@ -50,6 +50,41 @@ pub fn resolve_log_path(cwd: &str, path: &str) -> String {
     Path::new(cwd).join(path).to_string_lossy().to_string()
 }
 
+pub fn expand_output_pattern(
+    pattern: &str,
+    job_id: i64,
+    job_name: &str,
+    user_name: &str,
+    hostname: &str,
+) -> String {
+    let mut output = String::new();
+    let mut chars = pattern.chars();
+    while let Some(ch) = chars.next() {
+        if ch != '%' {
+            output.push(ch);
+            continue;
+        }
+
+        match chars.next() {
+            Some('%') => output.push('%'),
+            Some('j') => output.push_str(&job_id.to_string()),
+            Some('x') => output.push_str(job_name),
+            Some('u') => output.push_str(user_name),
+            Some('N') => output.push_str(hostname),
+            Some(other) => {
+                output.push('%');
+                output.push(other);
+            }
+            None => output.push('%'),
+        }
+    }
+    output
+}
+
+pub fn default_batch_output_pattern() -> &'static str {
+    "slurm-%j.out"
+}
+
 pub fn parse_mem_mb(value: &str) -> Result<u64> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
@@ -181,7 +216,7 @@ fn split_tokens(input: &str) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_directives;
+    use super::{default_batch_output_pattern, expand_output_pattern, parse_directives};
 
     #[test]
     fn parses_long_and_short_sbatch_directives() {
@@ -216,5 +251,12 @@ echo start
 ";
         let directives = parse_directives(script).expect("parse directives");
         assert_eq!(directives.job_name.as_deref(), Some("before"));
+    }
+
+    #[test]
+    fn expands_common_output_pattern_tokens() {
+        let value = expand_output_pattern("logs/%x-%j-%%-%u-%N.out", 42, "demo", "alice", "node1");
+        assert_eq!(value, "logs/demo-42-%-alice-node1.out");
+        assert_eq!(default_batch_output_pattern(), "slurm-%j.out");
     }
 }

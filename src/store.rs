@@ -6,7 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::config::AppConfig;
 use crate::error::{Result, SlotdError};
 use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
-use crate::sbatch::resolve_log_path;
+use crate::sbatch::{default_batch_output_pattern, expand_output_pattern, resolve_log_path};
 
 const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 
@@ -27,6 +27,7 @@ impl Store {
 
     pub fn create_job(&self, request: SubmitRequest) -> Result<i64> {
         let submit_time = now_ts();
+        let user_name = request.user_name.clone();
         let resolved_name = request
             .name
             .clone()
@@ -60,16 +61,29 @@ impl Store {
         let script_path = job_dir.join("script.sh");
         fs::write(&script_path, request.script_body)?;
 
+        let default_stdout = expand_output_pattern(
+            default_batch_output_pattern(),
+            job_id,
+            &resolved_name,
+            &user_name,
+            &self.config.hostname,
+        );
         let stdout_path = request
             .stdout_path
             .as_deref()
-            .map(|path| PathBuf::from(resolve_log_path(&request.cwd, path)))
-            .unwrap_or_else(|| job_dir.join("stdout.log"));
+            .map(|path| {
+                expand_output_pattern(path, job_id, &resolved_name, &user_name, &self.config.hostname)
+            })
+            .unwrap_or(default_stdout);
+        let stdout_path = PathBuf::from(resolve_log_path(&request.cwd, &stdout_path));
         let stderr_path = request
             .stderr_path
             .as_deref()
-            .map(|path| PathBuf::from(resolve_log_path(&request.cwd, path)))
-            .unwrap_or_else(|| job_dir.join("stderr.log"));
+            .map(|path| {
+                expand_output_pattern(path, job_id, &resolved_name, &user_name, &self.config.hostname)
+            })
+            .map(|path| PathBuf::from(resolve_log_path(&request.cwd, &path)))
+            .unwrap_or_else(|| stdout_path.clone());
         ensure_parent_dir(&stdout_path)?;
         ensure_parent_dir(&stderr_path)?;
 
