@@ -1,0 +1,31 @@
+mod cli;
+mod config;
+mod daemon;
+mod error;
+mod ipc;
+mod job;
+mod output;
+mod recovery;
+mod runner;
+mod store;
+
+use std::ffi::OsString;
+
+use clap::Parser;
+
+use crate::cli::{Cli, dispatch_argv0};
+use crate::error::Result;
+
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
+    let argv: Vec<OsString> = std::env::args_os().collect();
+    let argv = dispatch_argv0(argv);
+    let cli = Cli::parse_from(argv);
+    cli.run()
+}

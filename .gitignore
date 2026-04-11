@@ -1,2 +1,7 @@
 .codex
 .vscode
+
+
+# Added by cargo
+
+/target

@@ -1,0 +1,10 @@
+[Unit]
+Description=slotd job scheduler daemon
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/slotd daemon
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target
