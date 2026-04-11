@@ -528,7 +528,8 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
 }
 
 fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
-    let fields = parse_squeue_fields(args.format.as_deref()).map_err(SlotdError::from)?;
+    let fields =
+        parse_squeue_fields(args.format.as_deref(), args.long).map_err(SlotdError::from)?;
     let state_filter = if let Some(values) = args.states {
         Some(parse_states(values)?)
     } else if args.all {
@@ -733,7 +734,7 @@ fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
 }
 
 fn run_sinfo(config: AppConfig, args: SinfoArgs) -> Result<()> {
-    let fields = parse_sinfo_fields(args.format.as_deref()).map_err(SlotdError::from)?;
+    let fields = parse_sinfo_fields(args.format.as_deref(), args.long).map_err(SlotdError::from)?;
     match send_request(&config, &Request::NodeInfo)? {
         Response::NodeInfo { info } => {
             let partitions = filter_partitions(info.partitions, args.partitions.as_deref());
@@ -1717,6 +1718,7 @@ mod tests {
         parse_time_filter,
     };
     use crate::config::AppConfig;
+    use crate::sbatch::BatchDirectives;
 
     #[test]
     fn argv0_dispatch_inserts_slurm_alias() {
@@ -1784,6 +1786,46 @@ mod tests {
         assert_eq!(resolved.cwd, "/tmp");
         assert_eq!(resolved.requested_cpus, 4);
         assert_eq!(resolved.requested_tasks, 2);
+        assert_eq!(resolved.requested_memory_mb, 2048);
+        assert_eq!(resolved.requested_gpus, 0);
+        assert_eq!(resolved.time_limit_secs, Some(1800));
+    }
+
+    #[test]
+    fn phase1_cli_resource_values_override_batch_directives() {
+        let config = AppConfig::load();
+        let directives = BatchDirectives {
+            job_name: Some("from-directive".to_string()),
+            partition: Some(config.default_partition().to_string()),
+            cpus_per_task: Some(2),
+            ntasks: Some(3),
+            mem_mb: Some(1024),
+            gpus: Some(1),
+            time_limit_secs: Some(600),
+            dependency: None,
+            array_spec: None,
+            output_path: None,
+            error_path: None,
+            chdir: Some("/directive".to_string()),
+        };
+        let args = ResourceArgs {
+            job_name: Some("from-cli".to_string()),
+            partition: Some(config.default_partition().to_string()),
+            cpus_per_task: Some(4),
+            ntasks: Some(5),
+            mem: Some("2G".to_string()),
+            time: Some("00:30:00".to_string()),
+            gpus: Some(0),
+            chdir: Some("/cli".into()),
+        };
+
+        let resolved = args
+            .resolve(&config, Some(&directives))
+            .expect("resource args resolve");
+        assert_eq!(resolved.job_name.as_deref(), Some("from-cli"));
+        assert_eq!(resolved.cwd, "/cli");
+        assert_eq!(resolved.requested_cpus, 4);
+        assert_eq!(resolved.requested_tasks, 5);
         assert_eq!(resolved.requested_memory_mb, 2048);
         assert_eq!(resolved.requested_gpus, 0);
         assert_eq!(resolved.time_limit_secs, Some(1800));

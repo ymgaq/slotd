@@ -106,6 +106,11 @@ pub enum SqueueField {
     User,
     StateCompact,
     Time,
+    TimeLimit,
+    NumTasks,
+    ReqCpus,
+    ReqMem,
+    ReqGpus,
     NodeListReason,
 }
 
@@ -118,6 +123,11 @@ impl SqueueField {
             Self::User => "USER",
             Self::StateCompact => "ST",
             Self::Time => "TIME",
+            Self::TimeLimit => "TIME_LIMIT",
+            Self::NumTasks => "NTASKS",
+            Self::ReqCpus => "CPUS",
+            Self::ReqMem => "REQ_MEM",
+            Self::ReqGpus => "REQ_GPU",
             Self::NodeListReason => "NODELIST(REASON)",
         }
     }
@@ -130,12 +140,26 @@ impl SqueueField {
             Self::User => 12,
             Self::StateCompact => 2,
             Self::Time => 11,
+            Self::TimeLimit => 11,
+            Self::NumTasks => 6,
+            Self::ReqCpus => 6,
+            Self::ReqMem => 8,
+            Self::ReqGpus => 7,
             Self::NodeListReason => 16,
         }
     }
 
     pub fn right_align(self) -> bool {
-        matches!(self, Self::JobId | Self::Time)
+        matches!(
+            self,
+            Self::JobId
+                | Self::Time
+                | Self::TimeLimit
+                | Self::NumTasks
+                | Self::ReqCpus
+                | Self::ReqMem
+                | Self::ReqGpus
+        )
     }
 
     pub fn render(self, config: &AppConfig, job: &JobRecord) -> String {
@@ -146,6 +170,14 @@ impl SqueueField {
             Self::User => job.user_name.clone(),
             Self::StateCompact => job.state.short_code().to_string(),
             Self::Time => format_elapsed(job),
+            Self::TimeLimit => job
+                .time_limit_secs
+                .map(|value| format_duration(value as i64))
+                .unwrap_or_else(|| "UNLIMITED".to_string()),
+            Self::NumTasks => job.requested_tasks.to_string(),
+            Self::ReqCpus => job.requested_cpus.to_string(),
+            Self::ReqMem => format!("{}M", job.requested_memory_mb),
+            Self::ReqGpus => job.requested_gpus.to_string(),
             Self::NodeListReason => squeue_nodelist_reason(config, job),
         }
     }
@@ -295,6 +327,14 @@ pub enum SinfoField {
     Hostnames,
     State,
     GresUsed,
+    Cpus,
+    CpusLoad,
+    Memory,
+    MemoryAllocated,
+    Gpus,
+    GpusAllocated,
+    RunningJobs,
+    PendingJobs,
 }
 
 impl SinfoField {
@@ -304,6 +344,14 @@ impl SinfoField {
             Self::Hostnames => "HOSTNAMES",
             Self::State => "STATE",
             Self::GresUsed => "GRES_USED",
+            Self::Cpus => "CPUS",
+            Self::CpusLoad => "CPU_ALLOC",
+            Self::Memory => "MEMORY",
+            Self::MemoryAllocated => "MEM_ALLOC",
+            Self::Gpus => "GPUS",
+            Self::GpusAllocated => "GPU_ALLOC",
+            Self::RunningJobs => "RUNNING",
+            Self::PendingJobs => "PENDING",
         }
     }
 
@@ -313,11 +361,29 @@ impl SinfoField {
             Self::Hostnames => 15,
             Self::State => 5,
             Self::GresUsed => 25,
+            Self::Cpus => 6,
+            Self::CpusLoad => 9,
+            Self::Memory => 10,
+            Self::MemoryAllocated => 10,
+            Self::Gpus => 6,
+            Self::GpusAllocated => 9,
+            Self::RunningJobs => 7,
+            Self::PendingJobs => 7,
         }
     }
 
     pub fn right_align(self) -> bool {
-        false
+        matches!(
+            self,
+            Self::Cpus
+                | Self::CpusLoad
+                | Self::Memory
+                | Self::MemoryAllocated
+                | Self::Gpus
+                | Self::GpusAllocated
+                | Self::RunningJobs
+                | Self::PendingJobs
+        )
     }
 
     pub fn render(self, config: &AppConfig, partition: &PartitionInfo) -> String {
@@ -332,12 +398,37 @@ impl SinfoField {
             Self::Hostnames => partition.hostname.clone(),
             Self::State => partition.state.clone(),
             Self::GresUsed => partition.gres_used.clone(),
+            Self::Cpus => partition.total_cpus.to_string(),
+            Self::CpusLoad => partition.allocated_cpus.to_string(),
+            Self::Memory => format!("{}M", partition.total_memory_mb),
+            Self::MemoryAllocated => format!("{}M", partition.allocated_memory_mb),
+            Self::Gpus => partition.total_gpus.to_string(),
+            Self::GpusAllocated => partition.allocated_gpus.to_string(),
+            Self::RunningJobs => partition.running_jobs.to_string(),
+            Self::PendingJobs => partition.pending_jobs.to_string(),
         }
     }
 }
 
-pub fn parse_squeue_fields(value: Option<&str>) -> std::result::Result<Vec<SqueueField>, String> {
+pub fn parse_squeue_fields(
+    value: Option<&str>,
+    long: bool,
+) -> std::result::Result<Vec<SqueueField>, String> {
     match value {
+        None if long => Ok(vec![
+            SqueueField::JobId,
+            SqueueField::Partition,
+            SqueueField::Name,
+            SqueueField::User,
+            SqueueField::StateCompact,
+            SqueueField::Time,
+            SqueueField::TimeLimit,
+            SqueueField::NumTasks,
+            SqueueField::ReqCpus,
+            SqueueField::ReqMem,
+            SqueueField::ReqGpus,
+            SqueueField::NodeListReason,
+        ]),
         None => Ok(vec![
             SqueueField::JobId,
             SqueueField::Partition,
@@ -357,6 +448,11 @@ pub fn parse_squeue_fields(value: Option<&str>) -> std::result::Result<Vec<Squeu
                 "user" => Ok(SqueueField::User),
                 "st" | "state" => Ok(SqueueField::StateCompact),
                 "time" | "elapsed" => Ok(SqueueField::Time),
+                "timelimit" | "time_limit" => Ok(SqueueField::TimeLimit),
+                "ntasks" => Ok(SqueueField::NumTasks),
+                "cpus" | "reqcpus" => Ok(SqueueField::ReqCpus),
+                "reqmem" => Ok(SqueueField::ReqMem),
+                "reqgpu" | "reqgpus" => Ok(SqueueField::ReqGpus),
                 "nodelist(reason)" | "nodelistreason" | "reason" | "nodelist" => {
                     Ok(SqueueField::NodeListReason)
                 }
@@ -407,8 +503,25 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
     }
 }
 
-pub fn parse_sinfo_fields(value: Option<&str>) -> std::result::Result<Vec<SinfoField>, String> {
+pub fn parse_sinfo_fields(
+    value: Option<&str>,
+    long: bool,
+) -> std::result::Result<Vec<SinfoField>, String> {
     match value {
+        None if long => Ok(vec![
+            SinfoField::Partition,
+            SinfoField::Hostnames,
+            SinfoField::State,
+            SinfoField::Cpus,
+            SinfoField::CpusLoad,
+            SinfoField::Memory,
+            SinfoField::MemoryAllocated,
+            SinfoField::Gpus,
+            SinfoField::GpusAllocated,
+            SinfoField::RunningJobs,
+            SinfoField::PendingJobs,
+            SinfoField::GresUsed,
+        ]),
         None => Ok(vec![
             SinfoField::Partition,
             SinfoField::Hostnames,
@@ -422,6 +535,14 @@ pub fn parse_sinfo_fields(value: Option<&str>) -> std::result::Result<Vec<SinfoF
                 "partition" => Ok(SinfoField::Partition),
                 "hostnames" | "hostname" | "nodelist" => Ok(SinfoField::Hostnames),
                 "state" => Ok(SinfoField::State),
+                "cpus" => Ok(SinfoField::Cpus),
+                "cpu_alloc" | "cpusload" | "cpualloc" => Ok(SinfoField::CpusLoad),
+                "memory" | "mem" => Ok(SinfoField::Memory),
+                "mem_alloc" | "memoryallocated" | "memalloc" => Ok(SinfoField::MemoryAllocated),
+                "gpus" => Ok(SinfoField::Gpus),
+                "gpu_alloc" | "gpusallocated" | "gpualloc" => Ok(SinfoField::GpusAllocated),
+                "running" | "runningjobs" => Ok(SinfoField::RunningJobs),
+                "pending" | "pendingjobs" => Ok(SinfoField::PendingJobs),
                 "gres_used" | "gresused" => Ok(SinfoField::GresUsed),
                 other => Err(format!("unsupported sinfo field: {other}")),
             })
@@ -715,6 +836,45 @@ mod tests {
     }
 
     #[test]
+    fn default_squeue_fields_match_expected_order() {
+        let fields = parse_squeue_fields(None, false).expect("default fields");
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SqueueField::JobId,
+                SqueueField::Partition,
+                SqueueField::Name,
+                SqueueField::User,
+                SqueueField::StateCompact,
+                SqueueField::Time,
+                SqueueField::NodeListReason
+            ]
+        ));
+    }
+
+    #[test]
+    fn long_squeue_fields_expand_default_view() {
+        let fields = parse_squeue_fields(None, true).expect("long fields");
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SqueueField::JobId,
+                SqueueField::Partition,
+                SqueueField::Name,
+                SqueueField::User,
+                SqueueField::StateCompact,
+                SqueueField::Time,
+                SqueueField::TimeLimit,
+                SqueueField::NumTasks,
+                SqueueField::ReqCpus,
+                SqueueField::ReqMem,
+                SqueueField::ReqGpus,
+                SqueueField::NodeListReason
+            ]
+        ));
+    }
+
+    #[test]
     fn parses_custom_sacct_field_list() {
         let fields = parse_sacct_fields(Some("JobID,State,Elapsed")).expect("custom fields");
         assert!(matches!(
@@ -725,7 +885,8 @@ mod tests {
 
     #[test]
     fn parses_custom_squeue_field_list() {
-        let fields = parse_squeue_fields(Some("JobID,Name,State,Reason")).expect("custom fields");
+        let fields =
+            parse_squeue_fields(Some("JobID,Name,State,Reason"), false).expect("custom fields");
         assert!(matches!(
             fields.as_slice(),
             [
@@ -739,26 +900,48 @@ mod tests {
 
     #[test]
     fn parses_percent_style_format_lists() {
-        let squeue = parse_squeue_fields(Some("%i %P %j %u %t %M %R")).expect("squeue");
+        let squeue = parse_squeue_fields(Some("%i %P %j %u %t %M %R"), false).expect("squeue");
         assert_eq!(squeue.len(), 7);
 
         let sacct = parse_sacct_fields(Some("%i %F %K %j %P %u %T %X %M %b %B")).expect("sacct");
         assert_eq!(sacct.len(), 11);
 
-        let sinfo = parse_sinfo_fields(Some("%P %N %t %G")).expect("sinfo");
+        let sinfo = parse_sinfo_fields(Some("%P %N %t %G"), false).expect("sinfo");
         assert_eq!(sinfo.len(), 4);
     }
 
     #[test]
     fn parses_custom_sinfo_field_list() {
-        let fields =
-            parse_sinfo_fields(Some("Partition,Hostnames,State,GresUsed")).expect("custom fields");
+        let fields = parse_sinfo_fields(Some("Partition,Hostnames,State,GresUsed"), false)
+            .expect("custom fields");
         assert!(matches!(
             fields.as_slice(),
             [
                 SinfoField::Partition,
                 SinfoField::Hostnames,
                 SinfoField::State,
+                SinfoField::GresUsed
+            ]
+        ));
+    }
+
+    #[test]
+    fn long_sinfo_fields_expand_default_view() {
+        let fields = parse_sinfo_fields(None, true).expect("long fields");
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SinfoField::Partition,
+                SinfoField::Hostnames,
+                SinfoField::State,
+                SinfoField::Cpus,
+                SinfoField::CpusLoad,
+                SinfoField::Memory,
+                SinfoField::MemoryAllocated,
+                SinfoField::Gpus,
+                SinfoField::GpusAllocated,
+                SinfoField::RunningJobs,
+                SinfoField::PendingJobs,
                 SinfoField::GresUsed
             ]
         ));
