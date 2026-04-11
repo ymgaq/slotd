@@ -195,6 +195,7 @@ Supported CLI options:
 - `-o`, `--output`
 - `-e`, `--error`
 - `-D`, `--chdir`
+- `--constraint`
 - `-d`, `--dependency`
 - `-a`, `--array`
 - `--export`
@@ -216,6 +217,7 @@ Supported `#SBATCH` directives in script contents:
 - `-o`, `--output`
 - `-e`, `--error`
 - `-D`, `--chdir`
+- `--constraint`
 - `-d`, `--dependency`
 - `-a`, `--array`
 
@@ -282,13 +284,17 @@ Supported options:
 - `-o`, `--output`
 - `-e`, `--error`
 - `-D`, `--chdir`
+- `--constraint`
 - `--immediate`
 - `--pty`
+- `--cpu-bind`
 
 Current `--immediate` behavior:
 
 - if enough resources are available right now, the allocation or command job is accepted
 - if enough resources are not available, submission fails immediately
+- `--constraint` is validated against the single host's configured feature set before submission
+- `--cpu-bind` supports `none`, `cores`, and `map_cpu:<id,id,...>`
 
 Not implemented yet:
 
@@ -317,6 +323,7 @@ Supported options:
 - `-t`, `--time`
 - `-G`, `--gpus`
 - `-D`, `--chdir`
+- `--constraint`
 - `--immediate`
 
 Current limitations:

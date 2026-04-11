@@ -97,8 +97,8 @@ impl Store {
                 parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                 requested_tasks, requested_gpus, allocation_only, dependency,
                 array_job_id, array_task_id, array_task_count, array_task_limit, submit_time,
-                state_reason, time_limit_secs, export_env, open_mode, warning_signal, warning_signal_seconds
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
+                state_reason, time_limit_secs, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
             params![
                 Option::<i64>::None,
                 Option::<i64>::None,
@@ -133,6 +133,8 @@ impl Store {
                     .warning_signal
                     .as_ref()
                     .map(|value| value.seconds_before_end as i64),
+                request.constraint.as_deref(),
+                request.cpu_bind.as_deref(),
             ],
         )?;
 
@@ -221,8 +223,8 @@ impl Store {
                 requested_cpus, requested_memory_mb, requested_tasks, requested_gpus, allocation_only,
                 dependency, array_job_id, array_task_id, array_task_count, array_task_limit,
                 submit_time, start_time, state_reason, time_limit_secs, script_path, stdout_path, stderr_path,
-                export_env, open_mode, warning_signal, warning_signal_seconds
-            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '', '', 'truncate', NULL, NULL)",
+                export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL)",
             params![
                 parent_job_id,
                 next_step_id as i64,
@@ -244,7 +246,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE parent_job_id = ?1
              ORDER BY step_id ASC, id ASC",
@@ -270,7 +272,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE parent_job_id IS NULL"
         )?;
@@ -296,7 +298,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs"
         )?;
         let rows = stmt.query_map([], map_job)?;
@@ -313,7 +315,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE state = 'RUNNING'
              ORDER BY id ASC",
@@ -330,7 +332,7 @@ impl Store {
                         requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                         array_task_id, array_task_count, array_task_limit, max_rss_kb,
                         submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                        assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
+                        assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
                  FROM jobs
                  WHERE id = ?1",
                 [job_id],
@@ -346,7 +348,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE state = 'PENDING' AND parent_job_id IS NULL
              ORDER BY id ASC
@@ -467,6 +469,7 @@ impl Store {
         name: Option<&str>,
         partition: Option<&str>,
         time_limit_secs: Option<u64>,
+        priority: Option<i32>,
     ) -> Result<()> {
         let job = self
             .get_job(job_id)?
@@ -497,6 +500,15 @@ impl Store {
             self.conn.execute(
                 "UPDATE jobs SET time_limit_secs = ?1 WHERE id = ?2",
                 params![value as i64, job_id],
+            )?;
+        }
+        if let Some(value) = priority {
+            if job.state != JobState::Pending {
+                return Err(SlotdError::from("priority can only be updated while pending"));
+            }
+            self.conn.execute(
+                "UPDATE jobs SET priority = ?1 WHERE id = ?2",
+                params![value, job_id],
             )?;
         }
         Ok(())
@@ -735,6 +747,18 @@ impl Store {
             "warning_signal_seconds",
             "ALTER TABLE jobs ADD COLUMN warning_signal_seconds INTEGER",
         )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "constraint",
+            "ALTER TABLE jobs ADD COLUMN constraint TEXT",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "cpu_bind",
+            "ALTER TABLE jobs ADD COLUMN cpu_bind TEXT",
+        )?;
         Ok(())
     }
 
@@ -762,6 +786,7 @@ impl Store {
             hostname: self.config.hostname.clone(),
             state,
             gres_used,
+            features: self.config.format_features(),
             total_cpus: self.config.total_cpus,
             total_memory_mb: self.config.total_memory_mb,
             total_gpus: if self.config.is_gpu_partition(partition) {
@@ -904,6 +929,8 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
             }),
             _ => None,
         },
+        constraint: row.get(39)?,
+        cpu_bind: row.get(40)?,
     })
 }
 
@@ -949,8 +976,9 @@ fn next_step_id_query(conn: &Connection, parent_job_id: i64) -> Result<u32> {
 
 fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
     jobs.sort_by(|a, b| {
-        a.submit_time
-            .cmp(&b.submit_time)
+        b.priority
+            .cmp(&a.priority)
+            .then_with(|| a.submit_time.cmp(&b.submit_time))
             .then_with(|| a.id.cmp(&b.id))
     });
 
@@ -964,17 +992,21 @@ fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
         .iter()
         .map(|(group_key, group_jobs)| {
             let top = &group_jobs[0];
-            (*group_key, top.submit_time, top.id)
+            (*group_key, top.priority, top.submit_time, top.id)
         })
         .collect::<Vec<_>>();
 
     let mut group_order = group_order;
-    group_order.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
+    group_order.sort_by(|a, b| {
+        b.1.cmp(&a.1)
+            .then_with(|| a.2.cmp(&b.2))
+            .then_with(|| a.3.cmp(&b.3))
+    });
 
     let mut ordered = Vec::new();
     loop {
         let mut progressed = false;
-        for (group_key, _, _) in &group_order {
+        for (group_key, _, _, _) in &group_order {
             if let Some(group_jobs) = grouped.get_mut(group_key) {
                 if !group_jobs.is_empty() {
                     ordered.push(group_jobs.remove(0));
@@ -1031,6 +1063,8 @@ mod tests {
             script_path: String::new(),
             stdout_path: String::new(),
             stderr_path: String::new(),
+            constraint: None,
+            cpu_bind: None,
             export_env: Vec::new(),
             open_mode: OpenMode::Truncate,
             warning_signal: None,
@@ -1050,11 +1084,11 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_prefers_earlier_submission_for_single_user_fifo() {
-        let older = pending_job(10, None, 100, 0);
-        let newer = pending_job(11, None, 0, 100);
-        let ordered = order_pending_jobs(vec![newer, older]);
-        assert_eq!(ordered[0].id, 10);
+    fn scheduler_prefers_higher_explicit_priority() {
+        let older = pending_job(10, None, 0, 0);
+        let newer = pending_job(11, None, 100, 100);
+        let ordered = order_pending_jobs(vec![older, newer]);
+        assert_eq!(ordered[0].id, 11);
     }
 }
 

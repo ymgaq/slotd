@@ -68,6 +68,7 @@ pub enum Request {
         name: Option<String>,
         partition: Option<String>,
         time_limit_secs: Option<u64>,
+        priority: Option<i32>,
     },
     SignalJob {
         job_id: i64,

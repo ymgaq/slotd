@@ -36,6 +36,7 @@ const CORE_RESOURCE_LONG_FLAGS: &[&str] = &[
     "time",
     "gpus",
     "chdir",
+    "constraint",
 ];
 
 #[derive(Debug, Parser)]
@@ -77,6 +78,8 @@ pub struct ResourceArgs {
     gpus: Option<u32>,
     #[arg(long, short = 'D')]
     chdir: Option<PathBuf>,
+    #[arg(long)]
+    constraint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +92,7 @@ struct ResolvedResourceArgs {
     requested_memory_mb: u64,
     requested_gpus: u32,
     time_limit_secs: Option<u64>,
+    constraint: Option<String>,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -137,6 +141,13 @@ impl ResourceArgs {
             .gpus
             .or_else(|| directives.and_then(|value| value.gpus))
             .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
+        let constraint = self
+            .constraint
+            .clone()
+            .or_else(|| directives.and_then(|value| value.constraint.clone()));
+        if let Some(value) = constraint.as_deref() {
+            validate_constraint(config, value, &partition)?;
+        }
         let time_limit_secs = match &self.time {
             Some(value) => Some(parse_time_limit_secs(value)?),
             None => directives.and_then(|value| value.time_limit_secs),
@@ -154,6 +165,7 @@ impl ResourceArgs {
             requested_memory_mb,
             requested_gpus,
             time_limit_secs,
+            constraint,
         })
     }
 }
@@ -262,6 +274,8 @@ pub struct SrunArgs {
     immediate: bool,
     #[arg(long)]
     pty: bool,
+    #[arg(long = "cpu-bind")]
+    cpu_bind: Option<String>,
     #[arg(long, hide = true)]
     no_wait: bool,
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -405,6 +419,8 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
             .error
             .map(|path| path.to_string_lossy().to_string())
             .or(defaults.error_path),
+        constraint: resolved.constraint,
+        cpu_bind: None,
         export_env,
         open_mode,
         warning_signal,
@@ -438,6 +454,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
             &args.command,
             args.output.as_deref(),
             args.error.as_deref(),
+            args.cpu_bind.as_deref(),
         );
     }
 
@@ -461,6 +478,8 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
                 requested_memory_mb: resolved.requested_memory_mb,
                 requested_gpus: resolved.requested_gpus,
                 time_limit_secs: resolved.time_limit_secs,
+                constraint: resolved.constraint,
+                cpu_bind: args.cpu_bind,
                 immediate: args.immediate,
                 stdout_path: args.output,
                 stderr_path: args.error,
@@ -495,6 +514,8 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
             .error
             .clone()
             .map(|path| path.to_string_lossy().to_string()),
+        constraint: resolved.constraint,
+        cpu_bind: args.cpu_bind,
         export_env: Vec::new(),
         open_mode: OpenMode::Truncate,
         warning_signal: None,
@@ -554,6 +575,8 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         time_limit_secs: resolved.time_limit_secs,
         stdout_path: None,
         stderr_path: None,
+        constraint: resolved.constraint,
+        cpu_bind: None,
         export_env: Vec::new(),
         open_mode: OpenMode::Truncate,
         warning_signal: None,
@@ -675,6 +698,7 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
         let mut name = None;
         let mut partition = None;
         let mut time_limit_secs = None;
+        let mut priority = None;
         for update in &args.updates {
             let Some((key, value)) = update.split_once('=') else {
                 return Err(SlotdError::from(format!(
@@ -685,7 +709,20 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
                 "jobname" | "name" => name = Some(value.to_string()),
                 "partition" => partition = Some(value.to_string()),
                 "timelimit" | "time" => time_limit_secs = Some(parse_time_limit_secs(value)?),
+                "priority" => {
+                    priority = Some(
+                        value
+                            .parse::<i32>()
+                            .map_err(|_| SlotdError::from(format!("invalid priority: {value}")))?,
+                    )
+                }
                 other => return Err(SlotdError::from(format!("unsupported update key: {other}"))),
+            }
+        }
+        if let Some(partition) = partition.as_deref() {
+            let job = load_job(&config, args.job_id)?;
+            if let Some(constraint) = job.constraint.as_deref() {
+                validate_constraint(&config, constraint, partition)?;
             }
         }
         return match send_request(
@@ -695,6 +732,7 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
                 name,
                 partition,
                 time_limit_secs,
+                priority,
             },
         )? {
             Response::Submitted { .. } => Ok(()),
@@ -707,7 +745,7 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
 
     if !args.action.eq_ignore_ascii_case("show") {
         return Err(SlotdError::from(
-            "supported syntax: scontrol show|hold|release|update job <job_id>; update keys: JobName, Partition, TimeLimit",
+            "supported syntax: scontrol show|hold|release|update job <job_id>; update keys: JobName, Partition, TimeLimit, Priority",
         ));
     }
 
@@ -846,6 +884,19 @@ fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord>
     }
 }
 
+fn load_job(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
+    match send_request(config, &Request::GetJob { job_id })? {
+        Response::Job { job: Some(job) } => Ok(job),
+        Response::Job { job: None } => {
+            Err(SlotdError::from(format!("job {job_id} not found")))
+        }
+        Response::Error { message } => Err(SlotdError::from(message)),
+        other => Err(SlotdError::from(format!(
+            "unexpected response while loading job {job_id}: {other:?}"
+        ))),
+    }
+}
+
 fn wait_for_submission_completion(config: &AppConfig, job_id: i64) -> Result<()> {
     let job = wait_for_job_completion(config, job_id)?;
     let mut jobs = vec![job.clone()];
@@ -923,7 +974,7 @@ fn run_foreground_allocation(
     job: &JobRecord,
     command: &[String],
 ) -> Result<()> {
-    run_foreground_allocation_with_mode(config, job, command, false, None, None)
+    run_foreground_allocation_with_mode(config, job, command, false, None, None, None)
 }
 
 fn run_foreground_allocation_with_mode(
@@ -933,6 +984,7 @@ fn run_foreground_allocation_with_mode(
     record_step: bool,
     stdout_path: Option<&Path>,
     stderr_path: Option<&Path>,
+    cpu_bind: Option<&str>,
 ) -> Result<()> {
     let step_record = if record_step {
         Some(start_step_record(config, job, command)?)
@@ -945,11 +997,24 @@ fn run_foreground_allocation_with_mode(
     child.stdin(Stdio::inherit());
     apply_foreground_stdio(&mut child, &job.cwd, stdout_path, stderr_path)?;
     apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
+    let cpu_ids = resolve_cpu_bind_ids(
+        cpu_bind.or(step_record.as_ref().and_then(|step| step.cpu_bind.as_deref())),
+        config.total_cpus,
+        job.requested_cpus.saturating_mul(job.requested_tasks).max(1),
+    )?;
     unsafe {
         child.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
+    }
+    if let Some(cpu_ids) = cpu_ids {
+        unsafe {
+            child.pre_exec(move || {
+                apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
     }
     let mut child = child.spawn()?;
     let pid = child.id() as i32;
@@ -1076,6 +1141,8 @@ struct InteractiveRunSpec {
     requested_memory_mb: u64,
     requested_gpus: u32,
     time_limit_secs: Option<u64>,
+    constraint: Option<String>,
+    cpu_bind: Option<String>,
     immediate: bool,
     stdout_path: Option<PathBuf>,
     stderr_path: Option<PathBuf>,
@@ -1083,6 +1150,7 @@ struct InteractiveRunSpec {
 }
 
 fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<()> {
+    let cpu_bind = spec.cpu_bind.clone();
     let request = SubmitRequest {
         name: spec.name.or_else(|| Some("srun".to_string())),
         user_name: current_user_name(),
@@ -1101,6 +1169,8 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         time_limit_secs: spec.time_limit_secs,
         stdout_path: None,
         stderr_path: None,
+        constraint: spec.constraint,
+        cpu_bind,
         export_env: Vec::new(),
         open_mode: OpenMode::Truncate,
         warning_signal: None,
@@ -1130,6 +1200,7 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         true,
         spec.stdout_path.as_deref(),
         spec.stderr_path.as_deref(),
+        spec.cpu_bind.as_deref(),
     )
 }
 
@@ -1239,6 +1310,58 @@ fn open_stdio_handle(path: &str) -> Result<std::fs::File> {
     Ok(OpenOptions::new().write(true).open(path)?)
 }
 
+fn resolve_cpu_bind_ids(
+    value: Option<&str>,
+    total_cpus: u32,
+    requested_cpus: u32,
+) -> Result<Option<Vec<usize>>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let normalized = value.to_ascii_lowercase();
+    if normalized == "none" {
+        return Ok(None);
+    }
+    if normalized == "cores" {
+        let limit = requested_cpus.min(total_cpus).max(1);
+        return Ok(Some((0..limit as usize).collect()));
+    }
+    if let Some(list) = normalized.strip_prefix("map_cpu:") {
+        let mut cpus = Vec::new();
+        for part in list.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+            let cpu = part
+                .parse::<usize>()
+                .map_err(|_| SlotdError::from(format!("invalid cpu-bind cpu id: {part}")))?;
+            if cpu >= total_cpus as usize {
+                return Err(SlotdError::from(format!(
+                    "cpu-bind cpu id {cpu} exceeds available CPUs"
+                )));
+            }
+            cpus.push(cpu);
+        }
+        if cpus.is_empty() {
+            return Err(SlotdError::from("cpu-bind map_cpu requires at least one CPU id"));
+        }
+        cpus.sort_unstable();
+        cpus.dedup();
+        return Ok(Some(cpus));
+    }
+    Err(SlotdError::from(format!(
+        "unsupported cpu-bind value: {value}; supported: none, cores, map_cpu:<ids>"
+    )))
+}
+
+fn apply_cpu_affinity(cpu_ids: &[usize]) -> Result<()> {
+    let mut cpu_set = nix::sched::CpuSet::new();
+    for &cpu_id in cpu_ids {
+        cpu_set
+            .set(cpu_id)
+            .map_err(|error| SlotdError::from(error.to_string()))?;
+    }
+    nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &cpu_set)
+        .map_err(|error| SlotdError::from(error.to_string()))
+}
+
 fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
     let Ok(value) = std::env::var("SLURM_JOB_ID") else {
         return Ok(None);
@@ -1267,6 +1390,7 @@ fn run_foreground_step(
     command: &[String],
     stdout_path: Option<&Path>,
     stderr_path: Option<&Path>,
+    cpu_bind: Option<&str>,
 ) -> Result<()> {
     let step = start_step_record(config, job, command)?;
     let mut child = Command::new(&command[0]);
@@ -1275,11 +1399,24 @@ fn run_foreground_step(
     child.stdin(Stdio::inherit());
     apply_foreground_stdio(&mut child, &job.cwd, stdout_path, stderr_path)?;
     apply_slurm_env(&mut child, config, &step);
+    let cpu_ids = resolve_cpu_bind_ids(
+        cpu_bind.or(step.cpu_bind.as_deref()),
+        config.total_cpus,
+        job.requested_cpus.saturating_mul(job.requested_tasks).max(1),
+    )?;
     unsafe {
         child.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
+    }
+    if let Some(cpu_ids) = cpu_ids {
+        unsafe {
+            child.pre_exec(move || {
+                apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
+                Ok(())
+            });
+        }
     }
     let mut child = child.spawn()?;
     let pid = child.id() as i32;
@@ -1513,6 +1650,16 @@ fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
         .collect()
 }
 
+fn validate_constraint(config: &AppConfig, value: &str, partition: &str) -> Result<()> {
+    if config.matches_constraint(value, partition) {
+        Ok(())
+    } else {
+        Err(SlotdError::from(format!(
+            "constraint {value:?} does not match local features for partition {partition}"
+        )))
+    }
+}
+
 fn load_sbatch_env_overrides() -> SbatchEnvOverrides {
     load_sbatch_env_overrides_with(|name| std::env::var(name).ok())
 }
@@ -1530,6 +1677,7 @@ where
     directives.time_limit_secs =
         get("SBATCH_TIME").and_then(|value| parse_time_limit_secs(&value).ok());
     directives.gpus = get("SBATCH_GPUS").and_then(|value| value.parse().ok());
+    directives.constraint = get("SBATCH_CONSTRAINT");
     directives.output_path = get("SBATCH_OUTPUT");
     directives.error_path = get("SBATCH_ERROR");
     directives.chdir = get("SBATCH_CHDIR");
@@ -1559,6 +1707,10 @@ fn merge_batch_directives(
         ntasks: overrides.ntasks.or(directives.ntasks),
         mem_mb: overrides.mem_mb.or(directives.mem_mb),
         gpus: overrides.gpus.or(directives.gpus),
+        constraint: overrides
+            .constraint
+            .clone()
+            .or_else(|| directives.constraint.clone()),
         time_limit_secs: overrides.time_limit_secs.or(directives.time_limit_secs),
         dependency: overrides
             .dependency
@@ -2092,7 +2244,7 @@ mod tests {
         CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
         load_sbatch_env_overrides_with, merge_batch_directives, parse_signal_name,
-        parse_time_filter, parse_warning_signal, resolve_export_spec,
+        parse_time_filter, parse_warning_signal, resolve_cpu_bind_ids, resolve_export_spec,
     };
     use crate::config::AppConfig;
     use crate::job::{JobRecord, JobState, OpenMode};
@@ -2156,6 +2308,7 @@ mod tests {
             time: Some("00:30:00".to_string()),
             gpus: Some(0),
             chdir: Some("/tmp".into()),
+            constraint: None,
         };
 
         let resolved = args.resolve(&config, None).expect("resource args resolve");
@@ -2179,6 +2332,7 @@ mod tests {
             ntasks: Some(3),
             mem_mb: Some(1024),
             gpus: Some(1),
+            constraint: None,
             time_limit_secs: Some(600),
             dependency: None,
             array_spec: None,
@@ -2195,6 +2349,7 @@ mod tests {
             time: Some("00:30:00".to_string()),
             gpus: Some(0),
             chdir: Some("/cli".into()),
+            constraint: None,
         };
 
         let resolved = args
@@ -2245,6 +2400,32 @@ mod tests {
         assert_eq!(merged.partition.as_deref(), Some("cpu"));
         assert_eq!(merged.cpus_per_task, Some(2));
         assert_eq!(merged.output_path.as_deref(), Some("from-directive.out"));
+    }
+
+    #[test]
+    fn phase3_constraint_is_shared_and_validated() {
+        let config = AppConfig::load();
+        let args = ResourceArgs {
+            job_name: None,
+            partition: Some(config.default_partition().to_string()),
+            cpus_per_task: None,
+            ntasks: None,
+            mem: None,
+            time: None,
+            gpus: None,
+            chdir: None,
+            constraint: Some("cpu".to_string()),
+        };
+        let resolved = args.resolve(&config, None).expect("resource args resolve");
+        assert_eq!(resolved.constraint.as_deref(), Some("cpu"));
+    }
+
+    #[test]
+    fn phase3_cpu_bind_map_cpu_is_parsed() {
+        let cpu_ids = resolve_cpu_bind_ids(Some("map_cpu:0,2,2"), 8, 4)
+            .expect("cpu bind")
+            .expect("cpu ids");
+        assert_eq!(cpu_ids, vec![0, 2]);
     }
 
     #[test]
@@ -2354,6 +2535,8 @@ mod tests {
             script_path: String::new(),
             stdout_path: "slurm-42.out".to_string(),
             stderr_path: "slurm-42.out".to_string(),
+            constraint: None,
+            cpu_bind: None,
             state_reason: None,
             term_signal: None,
             time_limit_secs: Some(300),

@@ -125,6 +125,7 @@ Partition behavior:
 - if no GPU capacity exists, GPU partitions are not exposed
 - if a GPU partition is selected and `--gpus` is omitted, the default GPU request is `1`
 - otherwise the default GPU request is `0`
+- optional host features come from `SLOTD_FEATURES`, plus implicit `cpu` and `gpu` markers
 
 ## Job Model
 
@@ -396,7 +397,9 @@ Behavior details:
 - default resources are the same as `sbatch`
 - default job name is the command basename
 - `--immediate` fails if resources are not available immediately
+- `--constraint` is checked against the local host feature set, not against remote nodes
 - `--pty` currently selects the foreground execution path; it does not implement terminal allocation features beyond direct foreground execution
+- `--cpu-bind` supports `none`, `cores`, and `map_cpu:<id,id,...>`
 - daemon-managed `srun --no-wait` prints `Submitted run job <id>`
 - nonzero exit codes are propagated back to the caller
 
@@ -594,12 +597,14 @@ Supported update keys:
 - `JobName` or `Name`
 - `Partition`
 - `TimeLimit` or `Time`
+- `Priority`
 
 Current mutability rules:
 
 - `JobName` can only be changed while `PENDING`
 - `Partition` can only be changed while `PENDING`
 - `TimeLimit` can be changed until the job reaches a terminal state
+- `Priority` can only be changed while `PENDING`
 
 `show job` output includes:
 

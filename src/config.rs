@@ -19,6 +19,7 @@ pub struct AppConfig {
     pub total_gpus: u32,
     pub gpu_model: String,
     pub cgroup_base: Option<PathBuf>,
+    features: Vec<String>,
     cpu_partitions: Vec<String>,
     gpu_partitions: Vec<String>,
     default_partition: String,
@@ -42,6 +43,7 @@ impl AppConfig {
         } else {
             Vec::new()
         };
+        let features = detect_features(total_gpus, &detected_gpus.model);
         let default_partition = gpu_partitions
             .first()
             .cloned()
@@ -64,6 +66,7 @@ impl AppConfig {
                 .or(detected_gpus.model)
                 .unwrap_or_else(|| "Generic-GPU".to_string()),
             cgroup_base: env::var_os("SLOTD_CGROUP_BASE").map(PathBuf::from),
+            features,
             cpu_partitions,
             gpu_partitions,
             default_partition,
@@ -105,6 +108,27 @@ impl AppConfig {
     pub fn is_gpu_partition(&self, partition: &str) -> bool {
         self.gpu_partitions.iter().any(|name| name == partition)
     }
+
+    pub fn available_features(&self) -> &[String] {
+        &self.features
+    }
+
+    pub fn format_features(&self) -> String {
+        self.features.join(",")
+    }
+
+    pub fn matches_constraint(&self, constraint: &str, partition: &str) -> bool {
+        if constraint.trim().is_empty() {
+            return true;
+        }
+        let features = self.available_features();
+        parse_constraint_terms(constraint).iter().all(|term| {
+            term.eq_ignore_ascii_case(partition)
+                || features
+                    .iter()
+                    .any(|feature| feature.eq_ignore_ascii_case(term))
+        })
+    }
 }
 
 fn available_parallelism() -> u32 {
@@ -133,6 +157,51 @@ fn env_partition_list(name: &str, defaults: &[&str]) -> Vec<String> {
         })
         .filter(|values| !values.is_empty())
         .unwrap_or_else(|| defaults.iter().map(|value| value.to_string()).collect())
+}
+
+fn detect_features(total_gpus: u32, gpu_model: &Option<String>) -> Vec<String> {
+    let mut features = env::var("SLOTD_FEATURES")
+        .ok()
+        .map(|value| parse_constraint_terms(&value))
+        .unwrap_or_default();
+    features.push("cpu".to_string());
+    if total_gpus > 0 {
+        features.push("gpu".to_string());
+    }
+    if let Some(model) = gpu_model {
+        let normalized = normalize_feature_name(model);
+        if !normalized.is_empty() {
+            features.push(normalized);
+        }
+    }
+    features.sort();
+    features.dedup();
+    features
+}
+
+fn parse_constraint_terms(value: &str) -> Vec<String> {
+    value
+        .split([',', '&'])
+        .map(str::trim)
+        .filter(|term| !term.is_empty())
+        .map(normalize_feature_name)
+        .filter(|term| !term.is_empty())
+        .collect()
+}
+
+fn normalize_feature_name(value: &str) -> String {
+    value
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() {
+                ch.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
 }
 
 struct DetectedGpuInfo {

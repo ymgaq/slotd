@@ -8,6 +8,7 @@ use std::thread;
 use std::time::Duration;
 
 use nix::errno::Errno;
+use nix::sched::{CpuSet, sched_setaffinity};
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, setsid};
 
@@ -98,12 +99,25 @@ impl Runner {
         if !assigned_gpu_ids.is_empty() {
             command.env("CUDA_VISIBLE_DEVICES", join_gpu_ids(&assigned_gpu_ids));
         }
+        let cpu_bind = resolve_cpu_bind_ids(
+            job.cpu_bind.as_deref(),
+            store.config().total_cpus,
+            job.requested_cpus.saturating_mul(job.requested_tasks).max(1),
+        )?;
         // Create a dedicated process group so scancel can terminate the whole tree.
         unsafe {
             command.pre_exec(|| {
                 setsid().map_err(std::io::Error::other)?;
                 Ok(())
             });
+        }
+        if let Some(cpu_ids) = cpu_bind {
+            unsafe {
+                command.pre_exec(move || {
+                    apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
+                    Ok(())
+                });
+            }
         }
 
         let child = command.spawn()?;
@@ -419,6 +433,60 @@ fn open_output_file(path: &str, open_mode: OpenMode) -> Result<File> {
         }
     }
     Ok(options.open(path)?)
+}
+
+fn resolve_cpu_bind_ids(
+    value: Option<&str>,
+    total_cpus: u32,
+    requested_cpus: u32,
+) -> Result<Option<Vec<usize>>> {
+    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok(None);
+    };
+    let normalized = value.to_ascii_lowercase();
+    if normalized == "none" {
+        return Ok(None);
+    }
+    if normalized == "cores" {
+        let limit = requested_cpus.min(total_cpus).max(1);
+        return Ok(Some((0..limit as usize).collect()));
+    }
+    if let Some(list) = normalized.strip_prefix("map_cpu:") {
+        let mut cpus = Vec::new();
+        for part in list.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+            let cpu = part.parse::<usize>().map_err(|_| {
+                crate::error::SlotdError::from(format!("invalid cpu-bind cpu id: {part}"))
+            })?;
+            if cpu >= total_cpus as usize {
+                return Err(crate::error::SlotdError::from(format!(
+                    "cpu-bind cpu id {cpu} exceeds available CPUs"
+                )));
+            }
+            cpus.push(cpu);
+        }
+        if cpus.is_empty() {
+            return Err(crate::error::SlotdError::from(
+                "cpu-bind map_cpu requires at least one CPU id",
+            ));
+        }
+        cpus.sort_unstable();
+        cpus.dedup();
+        return Ok(Some(cpus));
+    }
+    Err(crate::error::SlotdError::from(format!(
+        "unsupported cpu-bind value: {value}; supported: none, cores, map_cpu:<ids>"
+    )))
+}
+
+fn apply_cpu_affinity(cpu_ids: &[usize]) -> Result<()> {
+    let mut cpu_set = CpuSet::new();
+    for &cpu_id in cpu_ids {
+        cpu_set
+            .set(cpu_id)
+            .map_err(|error| crate::error::SlotdError::from(error.to_string()))?;
+    }
+    sched_setaffinity(Pid::from_raw(0), &cpu_set)
+        .map_err(|error| crate::error::SlotdError::from(error.to_string()))
 }
 
 fn job_status_path(job: &JobRecord) -> Option<PathBuf> {

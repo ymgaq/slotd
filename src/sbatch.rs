@@ -10,6 +10,7 @@ pub struct BatchDirectives {
     pub ntasks: Option<u32>,
     pub mem_mb: Option<u64>,
     pub gpus: Option<u32>,
+    pub constraint: Option<String>,
     pub time_limit_secs: Option<u64>,
     pub dependency: Option<String>,
     pub array_spec: Option<String>,
@@ -253,6 +254,12 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if let Some(value) = token.strip_prefix("--gpus=") {
             directives.gpus = Some(parse_u32("--gpus", value)?);
             1
+        } else if let Some(value) = token.strip_prefix("--constraint=") {
+            directives.constraint = Some(value.to_string());
+            1
+        } else if token == "--constraint" {
+            directives.constraint = Some(require_value(token, next)?.to_string());
+            2
         } else if let Some(value) = token.strip_prefix("--time=") {
             directives.time_limit_secs = Some(parse_time_limit_secs(value)?);
             1

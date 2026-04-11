@@ -37,5 +37,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     export_env TEXT NOT NULL DEFAULT '',
     open_mode TEXT NOT NULL DEFAULT 'truncate',
     warning_signal INTEGER,
-    warning_signal_seconds INTEGER
+    warning_signal_seconds INTEGER,
+    constraint TEXT,
+    cpu_bind TEXT
 );

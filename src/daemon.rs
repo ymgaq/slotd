@@ -174,12 +174,14 @@ fn dispatch_request(
             name,
             partition,
             time_limit_secs,
+            priority,
         } => {
             store.update_job_fields(
                 job_id,
                 name.as_deref(),
                 partition.as_deref(),
                 time_limit_secs,
+                priority,
             )?;
             schedule_pending_jobs(store, runner)?;
             Response::Submitted { job_id }

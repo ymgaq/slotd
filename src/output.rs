@@ -359,6 +359,7 @@ pub enum SinfoField {
     Hostnames,
     State,
     GresUsed,
+    Features,
     Cpus,
     CpusLoad,
     Memory,
@@ -376,6 +377,7 @@ impl SinfoField {
             Self::Hostnames => "HOSTNAMES",
             Self::State => "STATE",
             Self::GresUsed => "GRES_USED",
+            Self::Features => "FEATURES",
             Self::Cpus => "CPUS",
             Self::CpusLoad => "CPU_ALLOC",
             Self::Memory => "MEMORY",
@@ -393,6 +395,7 @@ impl SinfoField {
             Self::Hostnames => 15,
             Self::State => 5,
             Self::GresUsed => 25,
+            Self::Features => 24,
             Self::Cpus => 6,
             Self::CpusLoad => 9,
             Self::Memory => 10,
@@ -430,6 +433,7 @@ impl SinfoField {
             Self::Hostnames => partition.hostname.clone(),
             Self::State => partition.state.clone(),
             Self::GresUsed => partition.gres_used.clone(),
+            Self::Features => partition.features.clone(),
             Self::Cpus => partition.total_cpus.to_string(),
             Self::CpusLoad => partition.allocated_cpus.to_string(),
             Self::Memory => format!("{}M", partition.total_memory_mb),
@@ -545,6 +549,7 @@ pub fn parse_sinfo_fields(
             SinfoField::Partition,
             SinfoField::Hostnames,
             SinfoField::State,
+            SinfoField::Features,
             SinfoField::Cpus,
             SinfoField::CpusLoad,
             SinfoField::Memory,
@@ -559,6 +564,7 @@ pub fn parse_sinfo_fields(
             SinfoField::Partition,
             SinfoField::Hostnames,
             SinfoField::State,
+            SinfoField::Features,
             SinfoField::GresUsed,
         ]),
         Some(spec) if spec.contains('%') => parse_percent_sinfo_fields(spec),
@@ -568,6 +574,7 @@ pub fn parse_sinfo_fields(
                 "partition" => Ok(SinfoField::Partition),
                 "hostnames" | "hostname" | "nodelist" => Ok(SinfoField::Hostnames),
                 "state" => Ok(SinfoField::State),
+                "features" => Ok(SinfoField::Features),
                 "cpus" => Ok(SinfoField::Cpus),
                 "cpu_alloc" | "cpusload" | "cpualloc" => Ok(SinfoField::CpusLoad),
                 "memory" | "mem" => Ok(SinfoField::Memory),
@@ -635,6 +642,7 @@ fn parse_percent_sinfo_fields(spec: &str) -> std::result::Result<Vec<SinfoField>
             'P' => Ok(SinfoField::Partition),
             'N' => Ok(SinfoField::Hostnames),
             't' | 'T' => Ok(SinfoField::State),
+            'f' => Ok(SinfoField::Features),
             'G' => Ok(SinfoField::GresUsed),
             other => Err(format!("unsupported sinfo format code: %{other}")),
         })
@@ -940,8 +948,8 @@ mod tests {
         let sacct = parse_sacct_fields(Some("%i %F %K %j %P %u %T %X %M %b %B")).expect("sacct");
         assert_eq!(sacct.len(), 11);
 
-        let sinfo = parse_sinfo_fields(Some("%P %N %t %G"), false).expect("sinfo");
-        assert_eq!(sinfo.len(), 4);
+        let sinfo = parse_sinfo_fields(Some("%P %N %t %f %G"), false).expect("sinfo");
+        assert_eq!(sinfo.len(), 5);
     }
 
     #[test]
@@ -959,7 +967,7 @@ mod tests {
 
     #[test]
     fn parses_custom_sinfo_field_list() {
-        let fields = parse_sinfo_fields(Some("Partition,Hostnames,State,GresUsed"), false)
+        let fields = parse_sinfo_fields(Some("Partition,Hostnames,State,Features,GresUsed"), false)
             .expect("custom fields");
         assert!(matches!(
             fields.as_slice(),
@@ -967,6 +975,7 @@ mod tests {
                 SinfoField::Partition,
                 SinfoField::Hostnames,
                 SinfoField::State,
+                SinfoField::Features,
                 SinfoField::GresUsed
             ]
         ));
@@ -981,6 +990,7 @@ mod tests {
                 SinfoField::Partition,
                 SinfoField::Hostnames,
                 SinfoField::State,
+                SinfoField::Features,
                 SinfoField::Cpus,
                 SinfoField::CpusLoad,
                 SinfoField::Memory,
