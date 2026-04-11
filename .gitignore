@@ -6,6 +6,6 @@
 /var/*
 !/var/.gitkeep
 
-/docs-site/book/
-/docs-site-ja/book/
-/docs-site-cn/book/
+/docs/docs-site/book/
+/docs/docs-site-ja/book/
+/docs/docs-site-cn/book/
