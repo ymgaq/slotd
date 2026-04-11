@@ -87,7 +87,7 @@ pub struct ScontrolArgs {
 
 #[derive(Debug, Args)]
 pub struct ScancelArgs {
-    job_id: i64,
+    job_id: String,
 }
 
 #[derive(Debug, Args)]
@@ -714,10 +714,11 @@ fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
 }
 
 fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
+    let job_id = resolve_job_reference(&config, &args.job_id)?;
     match send_request(
         &config,
         &Request::Cancel {
-            job_id: args.job_id,
+            job_id,
         },
     )? {
         Response::Cancelled { job_id } => {
@@ -1142,6 +1143,12 @@ fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) 
     child.stdout(Stdio::inherit());
     child.stderr(Stdio::inherit());
     apply_slurm_env(&mut child, config, &step);
+    unsafe {
+        child.pre_exec(|| {
+            nix::unistd::setsid().map_err(std::io::Error::other)?;
+            Ok(())
+        });
+    }
     let mut child = child.spawn()?;
     let pid = child.id() as i32;
     let pgid = pid;
@@ -1434,6 +1441,32 @@ fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobReco
         }
     });
     jobs
+}
+
+fn resolve_job_reference(config: &AppConfig, value: &str) -> Result<i64> {
+    if let Some((parent, step)) = value.split_once('.') {
+        let parent_job_id = parent
+            .parse::<i64>()
+            .map_err(|_| SlotdError::from(format!("invalid job id: {value}")))?;
+        let step_id = step
+            .parse::<u32>()
+            .map_err(|_| SlotdError::from(format!("invalid step id: {value}")))?;
+        return match send_request(config, &Request::ListSteps { parent_job_id })? {
+            Response::Jobs { jobs } => jobs
+                .into_iter()
+                .find(|job| job.step_id == Some(step_id))
+                .map(|job| job.id)
+                .ok_or_else(|| SlotdError::from(format!("unknown step reference: {value}"))),
+            Response::Error { message } => Err(SlotdError::from(message)),
+            other => Err(SlotdError::from(format!(
+                "unexpected response while resolving step reference {value}: {other:?}"
+            ))),
+        };
+    }
+
+    value
+        .parse::<i64>()
+        .map_err(|_| SlotdError::from(format!("invalid job id: {value}")))
 }
 
 fn parse_datetime_parts(value: &str) -> Option<(i32, u32, u32, u32, u32, u32)> {

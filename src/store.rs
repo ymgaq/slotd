@@ -461,23 +461,41 @@ impl Store {
         time_limit_secs: Option<u64>,
         priority: Option<i32>,
     ) -> Result<()> {
+        let job = self
+            .get_job(job_id)?
+            .ok_or_else(|| SlotdError::from(format!("job {job_id} not found")))?;
+
         if let Some(value) = name {
+            if job.state != JobState::Pending {
+                return Err(SlotdError::from("job name can only be updated while pending"));
+            }
             self.conn
                 .execute("UPDATE jobs SET name = ?1 WHERE id = ?2", params![value, job_id])?;
         }
         if let Some(value) = partition {
+            if job.state != JobState::Pending {
+                return Err(SlotdError::from("partition can only be updated while pending"));
+            }
             self.conn.execute(
                 "UPDATE jobs SET partition = ?1 WHERE id = ?2 AND state = 'PENDING'",
                 params![value, job_id],
             )?;
         }
         if let Some(value) = time_limit_secs {
+            if job.state.is_terminal() {
+                return Err(SlotdError::from(
+                    "time limit cannot be updated after the job has finished",
+                ));
+            }
             self.conn.execute(
                 "UPDATE jobs SET time_limit_secs = ?1 WHERE id = ?2",
                 params![value as i64, job_id],
             )?;
         }
         if let Some(value) = priority {
+            if job.state != JobState::Pending {
+                return Err(SlotdError::from("priority can only be updated while pending"));
+            }
             self.conn.execute(
                 "UPDATE jobs SET priority = ?1 WHERE id = ?2",
                 params![value, job_id],
@@ -926,6 +944,73 @@ fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
 fn effective_priority(job: &JobRecord, now: i64) -> i64 {
     let age_bonus = now.saturating_sub(job.submit_time) / 60;
     job.priority as i64 + age_bonus
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{effective_priority, order_pending_jobs};
+    use crate::job::{JobRecord, JobState};
+
+    fn pending_job(id: i64, array_job_id: Option<i64>, priority: i32, submit_time: i64) -> JobRecord {
+        JobRecord {
+            id,
+            parent_job_id: None,
+            step_id: None,
+            held: false,
+            priority,
+            name: format!("job-{id}"),
+            user_name: "test".to_string(),
+            state: JobState::Pending,
+            partition: "cpu".to_string(),
+            command: "true".to_string(),
+            cwd: "/tmp".to_string(),
+            requested_cpus: 1,
+            requested_tasks: 1,
+            requested_memory_mb: 1,
+            requested_gpus: 0,
+            allocation_only: false,
+            dependency: None,
+            array_job_id,
+            array_task_id: None,
+            array_task_count: None,
+            array_task_limit: None,
+            max_rss_kb: None,
+            submit_time,
+            start_time: None,
+            end_time: None,
+            pid: None,
+            pgid: None,
+            exit_code: None,
+            state_reason: None,
+            term_signal: None,
+            time_limit_secs: None,
+            assigned_gpu_ids: Vec::new(),
+            script_path: String::new(),
+            stdout_path: String::new(),
+            stderr_path: String::new(),
+        }
+    }
+
+    #[test]
+    fn scheduler_interleaves_array_groups() {
+        let ordered = order_pending_jobs(vec![
+            pending_job(1, Some(1), 0, 0),
+            pending_job(2, Some(1), 0, 1),
+            pending_job(3, Some(3), 0, 2),
+            pending_job(4, Some(3), 0, 3),
+        ]);
+        let ids = ordered.into_iter().map(|job| job.id).collect::<Vec<_>>();
+        assert_eq!(ids, vec![1, 3, 2, 4]);
+    }
+
+    #[test]
+    fn scheduler_prefers_higher_effective_priority() {
+        let newer = pending_job(10, None, 100, 100);
+        let older = pending_job(11, None, 0, 0);
+        assert!(effective_priority(&newer, 100) > effective_priority(&older, 100));
+        let ordered = order_pending_jobs(vec![older, newer]);
+        assert_eq!(ordered[0].id, 10);
+    }
 }
 
 fn script_command(script_name: &str) -> String {
