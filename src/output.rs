@@ -35,7 +35,7 @@ pub fn print_sacct_jobs(jobs: &[JobRecord]) {
 }
 
 pub fn print_sinfo(config: &AppConfig, info: &NodeInfo) {
-    println!(" PARTITION |           HOSTNAMES | STATE |                        GRES_USED");
+    println!(" PARTITION |       HOSTNAMES | STATE |                 GRES_USED");
     for partition in &info.partitions {
         let partition_name = if partition.name == config.default_partition() {
             format!("{}*", partition.name)
@@ -43,11 +43,11 @@ pub fn print_sinfo(config: &AppConfig, info: &NodeInfo) {
             partition.name.clone()
         };
         println!(
-            "{:>10} | {:>19} | {:>5} | {:>32}",
+            "{:>10} | {:>15} | {:>5} | {:>25}",
             truncate(&partition_name, 10),
-            truncate(&partition.hostname, 19),
+            truncate(&partition.hostname, 15),
             partition.state,
-            truncate(&partition.gres_used, 32),
+            truncate(&partition.gres_used, 25),
         );
     }
 }
