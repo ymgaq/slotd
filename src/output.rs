@@ -593,6 +593,9 @@ fn format_alloc_tres(config: &AppConfig, job: &JobRecord) -> String {
 }
 
 fn display_job_id(job: &JobRecord) -> String {
+    if let (Some(parent_job_id), Some(step_id)) = (job.parent_job_id, job.step_id) {
+        return format!("{parent_job_id}.{step_id}");
+    }
     match (job.array_job_id, job.array_task_id) {
         (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
         _ => job.id.to_string(),

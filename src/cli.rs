@@ -570,7 +570,21 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
         },
     )? {
         Response::Job { job: Some(job) } => {
-            print_scontrol_job(&config, &job);
+            let steps = match send_request(
+                &config,
+                &Request::ListSteps {
+                    parent_job_id: job.id,
+                },
+            )? {
+                Response::Jobs { jobs } => jobs,
+                Response::Error { message } => return Err(SlotdError::from(message)),
+                other => {
+                    return Err(SlotdError::from(format!(
+                        "unexpected response to scontrol step listing: {other:?}"
+                    )));
+                }
+            };
+            print_scontrol_job(&config, &job, &steps);
             Ok(())
         }
         Response::Job { job: None } => {
@@ -747,13 +761,27 @@ fn run_foreground_allocation(
     job: &JobRecord,
     command: &[String],
 ) -> Result<()> {
+    run_foreground_allocation_with_mode(config, job, command, false)
+}
+
+fn run_foreground_allocation_with_mode(
+    config: &AppConfig,
+    job: &JobRecord,
+    command: &[String],
+    record_step: bool,
+) -> Result<()> {
+    let step_record = if record_step {
+        Some(start_step_record(config, job, command)?)
+    } else {
+        None
+    };
     let mut child = Command::new(&command[0]);
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
     child.stdin(Stdio::inherit());
     child.stdout(Stdio::inherit());
     child.stderr(Stdio::inherit());
-    apply_slurm_env(&mut child, config, job);
+    apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
     unsafe {
         child.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
@@ -781,6 +809,28 @@ fn run_foreground_allocation(
         }
     }
 
+    let step_job_id = if let Some(step) = &step_record {
+        match send_request(
+            config,
+            &Request::AdoptAllocation {
+                job_id: step.id,
+                pid,
+                pgid,
+            },
+        )? {
+            Response::Submitted { .. } => Some(step.id),
+            Response::Error { message } => return Err(SlotdError::from(message)),
+            other => {
+                return Err(SlotdError::from(format!(
+                    "unexpected response while adopting step {}: {other:?}",
+                    step.id
+                )));
+            }
+        }
+    } else {
+        None
+    };
+
     let status = child.wait()?;
     let exit_code = status.code();
     let term_signal = exit_signal(&status);
@@ -802,6 +852,28 @@ fn run_foreground_allocation(
                 "unexpected response while finishing allocation {}: {other:?}",
                 job.id
             )));
+        }
+    }
+
+    if let Some(step_job_id) = step_job_id {
+        match send_request(
+            config,
+            &Request::FinishAllocation {
+                job_id: step_job_id,
+                state,
+                exit_code,
+                term_signal,
+                state_reason: Some(reason.to_string()),
+            },
+        )? {
+            Response::Submitted { .. } => {}
+            Response::Error { message } => return Err(SlotdError::from(message)),
+            other => {
+                return Err(SlotdError::from(format!(
+                    "unexpected response while finishing step {}: {other:?}",
+                    step_job_id
+                )));
+            }
         }
     }
 
@@ -878,11 +950,48 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
     };
 
     let job = wait_for_job_running(config, job_id)?;
-    run_foreground_allocation(config, &job, &spec.command)
+    run_foreground_allocation_with_mode(config, &job, &spec.command, true)
+}
+
+fn start_step_record(config: &AppConfig, parent: &JobRecord, command: &[String]) -> Result<JobRecord> {
+    let step_job_id = match send_request(
+        config,
+        &Request::StartStep {
+            parent_job_id: parent.id,
+            name: command_basename(&command[0]),
+            command: shell_join(command),
+            cwd: parent.cwd.clone(),
+            user_name: current_user_name(),
+        },
+    )? {
+        Response::Submitted { job_id } => job_id,
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response while starting step for job {}: {other:?}",
+                parent.id
+            )));
+        }
+    };
+
+    match send_request(config, &Request::GetJob { job_id: step_job_id })? {
+        Response::Job { job: Some(job) } => Ok(job),
+        Response::Job { job: None } => {
+            Err(SlotdError::from(format!("step {step_job_id} disappeared")))
+        }
+        Response::Error { message } => Err(SlotdError::from(message)),
+        other => Err(SlotdError::from(format!(
+            "unexpected response while loading step {}: {other:?}",
+            step_job_id
+        ))),
+    }
 }
 
 fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
-    command.env("SLURM_JOB_ID", job.id.to_string());
+    command.env(
+        "SLURM_JOB_ID",
+        job.parent_job_id.unwrap_or(job.id).to_string(),
+    );
     command.env("SLURM_JOB_NAME", &job.name);
     command.env("SLURM_JOB_PARTITION", &job.partition);
     command.env("SLURM_JOB_NODELIST", &config.hostname);
@@ -895,7 +1004,10 @@ fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     if let Some(array_task_id) = job.array_task_id {
         command.env("SLURM_ARRAY_TASK_ID", array_task_id.to_string());
     }
-    command.env("SLURM_STEP_ID", "0");
+    command.env(
+        "SLURM_STEP_ID",
+        job.step_id.unwrap_or(0).to_string(),
+    );
 }
 
 fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
@@ -921,15 +1033,57 @@ fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
 }
 
 fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) -> Result<()> {
+    let step = start_step_record(config, job, command)?;
     let mut child = Command::new(&command[0]);
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
     child.stdin(Stdio::inherit());
     child.stdout(Stdio::inherit());
     child.stderr(Stdio::inherit());
-    apply_slurm_env(&mut child, config, job);
-
-    let status = child.spawn()?.wait()?;
+    apply_slurm_env(&mut child, config, &step);
+    let mut child = child.spawn()?;
+    let pid = child.id() as i32;
+    let pgid = pid;
+    match send_request(
+        config,
+        &Request::AdoptAllocation {
+            job_id: step.id,
+            pid,
+            pgid,
+        },
+    )? {
+        Response::Submitted { .. } => {}
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response while adopting step {}: {other:?}",
+                step.id
+            )));
+        }
+    }
+    let status = child.wait()?;
+    let exit_code = status.code();
+    let term_signal = exit_signal(&status);
+    let (state, reason) = allocation_terminal_state(exit_code, term_signal);
+    match send_request(
+        config,
+        &Request::FinishAllocation {
+            job_id: step.id,
+            state,
+            exit_code,
+            term_signal,
+            state_reason: Some(reason.to_string()),
+        },
+    )? {
+        Response::Submitted { .. } => {}
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response while finishing step {}: {other:?}",
+                step.id
+            )));
+        }
+    }
     match status.code() {
         Some(0) => Ok(()),
         Some(code) => Err(SlotdError::Exit(code)),
@@ -937,7 +1091,7 @@ fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) 
     }
 }
 
-fn print_scontrol_job(config: &AppConfig, job: &JobRecord) {
+fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) {
     let dependency = job.dependency.as_deref().unwrap_or("(null)");
     let reason = job.state_reason.as_deref().unwrap_or("(null)");
     let stdout = if job.stdout_path.is_empty() {
@@ -1005,6 +1159,21 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord) {
             .map(|value| format!("{value}K"))
             .unwrap_or_else(|| "(null)".to_string())
     );
+    if !steps.is_empty() {
+        let summary = steps
+            .iter()
+            .map(|step| {
+                format!(
+                    "{}:{}:{}",
+                    step.step_id.unwrap_or(0),
+                    step.state.as_str(),
+                    step.command
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!("   Steps={summary}");
+    }
 }
 
 fn shell_join(args: &[String]) -> String {

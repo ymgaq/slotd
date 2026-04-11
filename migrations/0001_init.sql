@@ -1,5 +1,7 @@
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_job_id INTEGER,
+    step_id INTEGER,
     name TEXT NOT NULL,
     user_name TEXT NOT NULL DEFAULT 'unknown',
     state TEXT NOT NULL,

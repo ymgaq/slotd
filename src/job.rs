@@ -69,6 +69,8 @@ impl std::str::FromStr for JobState {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct JobRecord {
     pub id: i64,
+    pub parent_job_id: Option<i64>,
+    pub step_id: Option<u32>,
     pub name: String,
     pub user_name: String,
     pub state: JobState,

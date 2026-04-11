@@ -72,6 +72,16 @@ fn handle_stream(
         }
         Request::SubmitRun { request, immediate } => submit_run(store, runner, request, immediate)?,
         Request::SubmitAlloc { request, immediate } => submit_alloc(store, request, immediate)?,
+        Request::StartStep {
+            parent_job_id,
+            name,
+            command,
+            cwd,
+            user_name,
+        } => {
+            let job_id = store.create_step(parent_job_id, name, command, cwd, user_name)?;
+            Response::Submitted { job_id }
+        }
         Request::AdoptAllocation { job_id, pid, pgid } => {
             store.adopt_allocation(job_id, pid, pgid)?;
             if let Some(job) = store.get_job(job_id)? {
@@ -124,6 +134,9 @@ fn handle_stream(
                 start_time,
                 end_time,
             )?,
+        },
+        Request::ListSteps { parent_job_id } => Response::Jobs {
+            jobs: store.list_steps(parent_job_id)?,
         },
         Request::GetJob { job_id } => Response::Job {
             job: store.get_job(job_id)?,

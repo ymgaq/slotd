@@ -18,6 +18,13 @@ pub enum Request {
         request: SubmitRequest,
         immediate: bool,
     },
+    StartStep {
+        parent_job_id: i64,
+        name: String,
+        command: String,
+        cwd: String,
+        user_name: String,
+    },
     AdoptAllocation {
         job_id: i64,
         pid: i32,
@@ -43,6 +50,9 @@ pub enum Request {
         partitions: Option<Vec<String>>,
         start_time: Option<i64>,
         end_time: Option<i64>,
+    },
+    ListSteps {
+        parent_job_id: i64,
     },
     GetJob {
         job_id: i64,
