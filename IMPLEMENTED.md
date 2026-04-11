@@ -202,6 +202,8 @@ Supported CLI options:
 - `--export-file`
 - `--open-mode`
 - `--signal`
+- `--begin`
+- `--exclusive`
 - `--parsable`
 - `-W`, `--wait`
 
@@ -218,6 +220,8 @@ Supported `#SBATCH` directives in script contents:
 - `-e`, `--error`
 - `-D`, `--chdir`
 - `--constraint`
+- `--begin`
+- `--exclusive`
 - `-d`, `--dependency`
 - `-a`, `--array`
 
@@ -257,7 +261,6 @@ Currently implemented array behavior:
 Not implemented yet:
 
 - accounts
-- priorities
 - a separate umbrella parent record distinct from child task records
 
 ## Command Submission
@@ -288,6 +291,8 @@ Supported options:
 - `--immediate`
 - `--pty`
 - `--cpu-bind`
+- `--label`
+- `--unbuffered`
 
 Current `--immediate` behavior:
 
@@ -295,6 +300,8 @@ Current `--immediate` behavior:
 - if enough resources are not available, submission fails immediately
 - `--constraint` is validated against the single host's configured feature set before submission
 - `--cpu-bind` supports `none`, `cores`, and `map_cpu:<id,id,...>`
+- `--label` prefixes forwarded stdout/stderr lines with `0: ` in foreground mode
+- `--unbuffered` flushes forwarded foreground output eagerly
 
 Not implemented yet:
 

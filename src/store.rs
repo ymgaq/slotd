@@ -97,8 +97,8 @@ impl Store {
                 parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                 requested_tasks, requested_gpus, allocation_only, dependency,
                 array_job_id, array_task_id, array_task_count, array_task_limit, submit_time,
-                state_reason, time_limit_secs, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)",
+                state_reason, time_limit_secs, begin_time, exclusive, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
             params![
                 Option::<i64>::None,
                 Option::<i64>::None,
@@ -126,6 +126,8 @@ impl Store {
                 submit_time,
                 "Resources",
                 request.time_limit_secs.map(|value| value as i64),
+                request.begin_time,
+                request.exclusive,
                 serde_json::to_string(&request.export_env)?,
                 request.open_mode.as_str(),
                 request.warning_signal.as_ref().map(|value| value.signal),
@@ -222,9 +224,9 @@ impl Store {
                 parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd,
                 requested_cpus, requested_memory_mb, requested_tasks, requested_gpus, allocation_only,
                 dependency, array_job_id, array_task_id, array_task_count, array_task_limit,
-                submit_time, start_time, state_reason, time_limit_secs, script_path, stdout_path, stderr_path,
+                submit_time, start_time, state_reason, time_limit_secs, begin_time, exclusive, script_path, stdout_path, stderr_path,
                 export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
-            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL)",
+            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, NULL, 0, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL)",
             params![
                 parent_job_id,
                 next_step_id as i64,
@@ -245,7 +247,7 @@ impl Store {
             "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                     assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE parent_job_id = ?1
@@ -271,7 +273,7 @@ impl Store {
             "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                     assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE parent_job_id IS NULL"
@@ -297,7 +299,7 @@ impl Store {
             "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                     assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs"
         )?;
@@ -314,7 +316,7 @@ impl Store {
             "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                     assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE state = 'RUNNING'
@@ -331,7 +333,7 @@ impl Store {
                 "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                         requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                         array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                        submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                        submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                         assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
                  FROM jobs
                  WHERE id = ?1",
@@ -347,7 +349,7 @@ impl Store {
             "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                     assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
              FROM jobs
              WHERE state = 'PENDING' AND parent_job_id IS NULL
@@ -726,6 +728,18 @@ impl Store {
         ensure_column(
             &self.conn,
             "jobs",
+            "begin_time",
+            "ALTER TABLE jobs ADD COLUMN begin_time INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "exclusive",
+            "ALTER TABLE jobs ADD COLUMN exclusive INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
             "export_env",
             "ALTER TABLE jobs ADD COLUMN export_env TEXT NOT NULL DEFAULT ''",
         )?;
@@ -849,6 +863,24 @@ impl Store {
         )?;
         Ok(count as usize)
     }
+
+    pub fn any_running_top_level_job(&self) -> Result<bool> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE state = 'RUNNING' AND parent_job_id IS NULL",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count > 0)
+    }
+
+    pub fn any_running_exclusive_job(&self) -> Result<bool> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE state = 'RUNNING' AND parent_job_id IS NULL AND exclusive = 1",
+            [],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count > 0)
+    }
 }
 
 fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
@@ -895,42 +927,44 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
             .filter(|value| !value.is_empty()),
         term_signal: row.get(29)?,
         time_limit_secs: row.get::<_, Option<i64>>(30)?.map(|value| value as u64),
-        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(31)?).map_err(|error| {
+        begin_time: row.get(31)?,
+        exclusive: row.get::<_, bool>(32)?,
+        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(33)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                31,
+                33,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        script_path: row.get(32)?,
-        stdout_path: row.get(33)?,
-        stderr_path: row.get(34)?,
-        export_env: parse_export_env_json(&row.get::<_, String>(35)?).map_err(|error| {
+        script_path: row.get(34)?,
+        stdout_path: row.get(35)?,
+        stderr_path: row.get(36)?,
+        export_env: parse_export_env_json(&row.get::<_, String>(37)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                35,
+                37,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
         open_mode: row
-            .get::<_, String>(36)?
+            .get::<_, String>(38)?
             .parse()
             .map_err(|message: String| {
                 rusqlite::Error::FromSqlConversionFailure(
-                    36,
+                    38,
                     rusqlite::types::Type::Text,
                     Box::new(SlotdError::from(message)),
                 )
             })?,
-        warning_signal: match (row.get::<_, Option<i32>>(37)?, row.get::<_, Option<i64>>(38)?) {
+        warning_signal: match (row.get::<_, Option<i32>>(39)?, row.get::<_, Option<i64>>(40)?) {
             (Some(signal), Some(seconds_before_end)) => Some(WarningSignal {
                 signal,
                 seconds_before_end: seconds_before_end as u64,
             }),
             _ => None,
         },
-        constraint: row.get(39)?,
-        cpu_bind: row.get(40)?,
+        constraint: row.get(41)?,
+        cpu_bind: row.get(42)?,
     })
 }
 
@@ -1059,6 +1093,8 @@ mod tests {
             state_reason: None,
             term_signal: None,
             time_limit_secs: None,
+            begin_time: None,
+            exclusive: false,
             assigned_gpu_ids: Vec::new(),
             script_path: String::new(),
             stdout_path: String::new(),

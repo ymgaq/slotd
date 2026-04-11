@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::fs;
 use std::fs::OpenOptions;
+use std::io::{BufRead, BufReader, Read, Write};
+use std::os::fd::{FromRawFd, IntoRawFd, OwnedFd};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -17,6 +19,7 @@ use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest, WarningSignal};
 use crate::output::{
     parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
     print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs,
+    print_squeue_jobs_with_options,
     print_squeue_jobs_with_start_times,
 };
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
@@ -102,6 +105,8 @@ struct SbatchEnvOverrides {
     export_file: Option<PathBuf>,
     open_mode: Option<String>,
     signal: Option<String>,
+    begin: Option<String>,
+    exclusive: bool,
 }
 
 impl ResourceArgs {
@@ -190,6 +195,10 @@ pub struct SbatchArgs {
     open_mode: Option<String>,
     #[arg(long)]
     signal: Option<String>,
+    #[arg(long)]
+    begin: Option<String>,
+    #[arg(long)]
+    exclusive: bool,
     #[arg(long, short = 'd')]
     dependency: Option<String>,
     #[arg(long, short = 'a')]
@@ -236,6 +245,8 @@ pub struct SqueueArgs {
     long: bool,
     #[arg(long)]
     start: bool,
+    #[arg(long)]
+    array: bool,
     #[arg(long = "noheader")]
     noheader: bool,
 }
@@ -276,6 +287,10 @@ pub struct SrunArgs {
     pty: bool,
     #[arg(long = "cpu-bind")]
     cpu_bind: Option<String>,
+    #[arg(long)]
+    label: bool,
+    #[arg(long)]
+    unbuffered: bool,
     #[arg(long, hide = true)]
     no_wait: bool,
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -394,6 +409,14 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         .or(env_overrides.signal.as_deref())
         .map(parse_warning_signal)
         .transpose()?;
+    let begin_time = args
+        .begin
+        .as_deref()
+        .or(env_overrides.begin.as_deref())
+        .or(defaults.begin.as_deref())
+        .map(parse_begin_time)
+        .transpose()?;
+    let exclusive = args.exclusive || env_overrides.exclusive || defaults.exclusive;
 
     let request = SubmitRequest {
         name: resolved.job_name,
@@ -411,6 +434,8 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         dependency: args.dependency.or(defaults.dependency),
         array_spec: args.array.or(defaults.array_spec),
         time_limit_secs: resolved.time_limit_secs,
+        begin_time,
+        exclusive,
         stdout_path: args
             .output
             .map(|path| path.to_string_lossy().to_string())
@@ -448,6 +473,11 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
 
 fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
     if let Some(job) = current_allocation_job(&config)? {
+        if args.no_wait && (args.label || args.unbuffered) {
+            return Err(SlotdError::from(
+                "--label and --unbuffered are not supported with --no-wait",
+            ));
+        }
         return run_foreground_step(
             &config,
             &job,
@@ -455,6 +485,8 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
             args.output.as_deref(),
             args.error.as_deref(),
             args.cpu_bind.as_deref(),
+            args.label,
+            args.unbuffered,
         );
     }
 
@@ -480,12 +512,19 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
                 time_limit_secs: resolved.time_limit_secs,
                 constraint: resolved.constraint,
                 cpu_bind: args.cpu_bind,
+                label_output: args.label,
+                unbuffered: args.unbuffered,
                 immediate: args.immediate,
                 stdout_path: args.output,
                 stderr_path: args.error,
                 command: args.command,
             },
         );
+    }
+    if args.label || args.unbuffered {
+        return Err(SlotdError::from(
+            "--label and --unbuffered are not supported with --no-wait",
+        ));
     }
 
     let script_body = format!("#!/usr/bin/env bash\nexec {}\n", command_override);
@@ -506,6 +545,8 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         dependency: None,
         array_spec: None,
         time_limit_secs: resolved.time_limit_secs,
+        begin_time: None,
+        exclusive: false,
         stdout_path: args
             .output
             .clone()
@@ -573,6 +614,8 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         dependency: None,
         array_spec: None,
         time_limit_secs: resolved.time_limit_secs,
+        begin_time: None,
+        exclusive: false,
         stdout_path: None,
         stderr_path: None,
         constraint: resolved.constraint,
@@ -644,7 +687,10 @@ fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
                     &fields,
                     &start_times,
                     args.noheader,
+                    args.array,
                 );
+            } else if args.array {
+                print_squeue_jobs_with_options(&config, &jobs, &fields, args.noheader, true);
             } else {
                 print_squeue_jobs(&config, &jobs, &fields, args.noheader);
             }
@@ -974,7 +1020,7 @@ fn run_foreground_allocation(
     job: &JobRecord,
     command: &[String],
 ) -> Result<()> {
-    run_foreground_allocation_with_mode(config, job, command, false, None, None, None)
+    run_foreground_allocation_with_mode(config, job, command, false, None, None, None, false, false)
 }
 
 fn run_foreground_allocation_with_mode(
@@ -985,6 +1031,8 @@ fn run_foreground_allocation_with_mode(
     stdout_path: Option<&Path>,
     stderr_path: Option<&Path>,
     cpu_bind: Option<&str>,
+    label_output: bool,
+    unbuffered: bool,
 ) -> Result<()> {
     let step_record = if record_step {
         Some(start_step_record(config, job, command)?)
@@ -995,7 +1043,14 @@ fn run_foreground_allocation_with_mode(
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
     child.stdin(Stdio::inherit());
-    apply_foreground_stdio(&mut child, &job.cwd, stdout_path, stderr_path)?;
+    let io_state = configure_foreground_stdio(
+        &mut child,
+        &job.cwd,
+        stdout_path,
+        stderr_path,
+        label_output,
+        unbuffered,
+    )?;
     apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
     let cpu_ids = resolve_cpu_bind_ids(
         cpu_bind.or(step_record.as_ref().and_then(|step| step.cpu_bind.as_deref())),
@@ -1073,6 +1128,7 @@ fn run_foreground_allocation_with_mode(
     };
 
     let status = child.wait()?;
+    io_state.finish()?;
     let exit_code = status.code();
     let term_signal = exit_signal(&status);
     let (state, reason) = allocation_terminal_state(
@@ -1143,6 +1199,8 @@ struct InteractiveRunSpec {
     time_limit_secs: Option<u64>,
     constraint: Option<String>,
     cpu_bind: Option<String>,
+    label_output: bool,
+    unbuffered: bool,
     immediate: bool,
     stdout_path: Option<PathBuf>,
     stderr_path: Option<PathBuf>,
@@ -1167,6 +1225,8 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         dependency: None,
         array_spec: None,
         time_limit_secs: spec.time_limit_secs,
+        begin_time: None,
+        exclusive: false,
         stdout_path: None,
         stderr_path: None,
         constraint: spec.constraint,
@@ -1201,6 +1261,8 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         spec.stdout_path.as_deref(),
         spec.stderr_path.as_deref(),
         spec.cpu_bind.as_deref(),
+        spec.label_output,
+        spec.unbuffered,
     )
 }
 
@@ -1310,6 +1372,104 @@ fn open_stdio_handle(path: &str) -> Result<std::fs::File> {
     Ok(OpenOptions::new().write(true).open(path)?)
 }
 
+enum ForegroundIoState {
+    Direct,
+    Streamed(Vec<std::thread::JoinHandle<Result<()>>>),
+}
+
+impl ForegroundIoState {
+    fn finish(self) -> Result<()> {
+        match self {
+            Self::Direct => Ok(()),
+            Self::Streamed(handles) => {
+                for handle in handles {
+                    handle
+                        .join()
+                        .map_err(|_| SlotdError::from("foreground output thread panicked"))??;
+                }
+                Ok(())
+            }
+        }
+    }
+}
+
+fn configure_foreground_stdio(
+    command: &mut Command,
+    cwd: &str,
+    stdout_path: Option<&Path>,
+    stderr_path: Option<&Path>,
+    label_output: bool,
+    unbuffered: bool,
+) -> Result<ForegroundIoState> {
+    if !label_output && !unbuffered {
+        apply_foreground_stdio(command, cwd, stdout_path, stderr_path)?;
+        return Ok(ForegroundIoState::Direct);
+    }
+
+    let stdout_target = open_foreground_stdio(stdout_path, cwd, "/dev/stdout")?;
+    let stderr_target = if same_path(stdout_path, stderr_path) {
+        stdout_target.try_clone()?
+    } else {
+        open_foreground_stdio(stderr_path, cwd, "/dev/stderr")?
+    };
+
+    let (stdout_reader, stdout_writer) = std::os::unix::net::UnixStream::pair()?;
+    let (stderr_reader, stderr_writer) = std::os::unix::net::UnixStream::pair()?;
+    let stdout_writer = unsafe { OwnedFd::from_raw_fd(stdout_writer.into_raw_fd()) };
+    let stderr_writer = unsafe { OwnedFd::from_raw_fd(stderr_writer.into_raw_fd()) };
+    command.stdout(Stdio::from(stdout_writer));
+    command.stderr(Stdio::from(stderr_writer));
+
+    let stdout_handle =
+        spawn_output_forwarder(stdout_reader, stdout_target, label_output, unbuffered, "0: ")?;
+    let stderr_handle =
+        spawn_output_forwarder(stderr_reader, stderr_target, label_output, unbuffered, "0: ")?;
+    Ok(ForegroundIoState::Streamed(vec![stdout_handle, stderr_handle]))
+}
+
+fn spawn_output_forwarder(
+    reader: std::os::unix::net::UnixStream,
+    mut target: std::fs::File,
+    label_output: bool,
+    unbuffered: bool,
+    label_prefix: &'static str,
+) -> Result<std::thread::JoinHandle<Result<()>>> {
+    Ok(std::thread::spawn(move || {
+        if label_output {
+            let mut reader = BufReader::new(reader);
+            let mut line = Vec::new();
+            loop {
+                line.clear();
+                let bytes = reader.read_until(b'\n', &mut line)?;
+                if bytes == 0 {
+                    break;
+                }
+                target.write_all(label_prefix.as_bytes())?;
+                target.write_all(&line)?;
+                target.flush()?;
+            }
+            return Ok(());
+        }
+
+        let mut reader = reader;
+        let mut buf = [0u8; 4096];
+        loop {
+            let bytes = reader.read(&mut buf)?;
+            if bytes == 0 {
+                break;
+            }
+            target.write_all(&buf[..bytes])?;
+            if unbuffered {
+                target.flush()?;
+            }
+        }
+        if !unbuffered {
+            target.flush()?;
+        }
+        Ok(())
+    }))
+}
+
 fn resolve_cpu_bind_ids(
     value: Option<&str>,
     total_cpus: u32,
@@ -1391,13 +1551,22 @@ fn run_foreground_step(
     stdout_path: Option<&Path>,
     stderr_path: Option<&Path>,
     cpu_bind: Option<&str>,
+    label_output: bool,
+    unbuffered: bool,
 ) -> Result<()> {
     let step = start_step_record(config, job, command)?;
     let mut child = Command::new(&command[0]);
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
     child.stdin(Stdio::inherit());
-    apply_foreground_stdio(&mut child, &job.cwd, stdout_path, stderr_path)?;
+    let io_state = configure_foreground_stdio(
+        &mut child,
+        &job.cwd,
+        stdout_path,
+        stderr_path,
+        label_output,
+        unbuffered,
+    )?;
     apply_slurm_env(&mut child, config, &step);
     let cpu_ids = resolve_cpu_bind_ids(
         cpu_bind.or(step.cpu_bind.as_deref()),
@@ -1447,6 +1616,7 @@ fn run_foreground_step(
         }
     }
     let status = child.wait()?;
+    io_state.finish()?;
     let exit_code = status.code();
     let term_signal = exit_signal(&status);
     let (state, reason) = allocation_terminal_state(
@@ -1528,13 +1698,15 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) 
         reason
     );
     println!(
-        "   NumTasks={} CPUs/Task={} ReqMem={}MB ReqGRES={} TimeLimit={} Dependency={}",
+        "   NumTasks={} CPUs/Task={} ReqMem={}MB ReqGRES={} TimeLimit={} BeginTime={} Dependency={} Exclusive={}",
         job.requested_tasks,
         job.requested_cpus,
         job.requested_memory_mb,
         req_gres,
         time_limit,
-        dependency
+        format_optional_timestamp(job.begin_time),
+        dependency,
+        if job.exclusive { "Yes" } else { "No" }
     );
     println!(
         "   SubmitTime={} StartTime={} EndTime={} ExitCode={} ArrayTask={} BatchFlag={}",
@@ -1650,6 +1822,14 @@ fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
         .collect()
 }
 
+fn parse_begin_time(value: &str) -> Result<i64> {
+    let trimmed = value.trim();
+    if let Some(offset) = trimmed.strip_prefix("now+") {
+        return Ok(now_ts().saturating_add(parse_time_limit_secs(offset)? as i64));
+    }
+    parse_time_filter(trimmed)
+}
+
 fn validate_constraint(config: &AppConfig, value: &str, partition: &str) -> Result<()> {
     if config.matches_constraint(value, partition) {
         Ok(())
@@ -1678,11 +1858,16 @@ where
         get("SBATCH_TIME").and_then(|value| parse_time_limit_secs(&value).ok());
     directives.gpus = get("SBATCH_GPUS").and_then(|value| value.parse().ok());
     directives.constraint = get("SBATCH_CONSTRAINT");
+    directives.begin = get("SBATCH_BEGIN");
+    directives.exclusive = get("SBATCH_EXCLUSIVE")
+        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .unwrap_or(false);
     directives.output_path = get("SBATCH_OUTPUT");
     directives.error_path = get("SBATCH_ERROR");
     directives.chdir = get("SBATCH_CHDIR");
     directives.dependency = get("SBATCH_DEPENDENCY");
     directives.array_spec = get("SBATCH_ARRAY_INX");
+    let exclusive = directives.exclusive;
 
     SbatchEnvOverrides {
         directives,
@@ -1690,6 +1875,8 @@ where
         export_file: get("SBATCH_EXPORT_FILE").map(PathBuf::from),
         open_mode: get("SBATCH_OPEN_MODE"),
         signal: get("SBATCH_SIGNAL"),
+        begin: get("SBATCH_BEGIN"),
+        exclusive,
     }
 }
 
@@ -1711,6 +1898,8 @@ fn merge_batch_directives(
             .constraint
             .clone()
             .or_else(|| directives.constraint.clone()),
+        begin: overrides.begin.clone().or_else(|| directives.begin.clone()),
+        exclusive: overrides.exclusive || directives.exclusive,
         time_limit_secs: overrides.time_limit_secs.or(directives.time_limit_secs),
         dependency: overrides
             .dependency
@@ -1890,14 +2079,20 @@ fn estimate_start_times(config: &AppConfig, jobs: &[JobRecord]) -> std::collecti
         let value = match job.state {
             JobState::Running => job.start_time.map(format_timestamp),
             JobState::Pending => {
+                let begin_time = job.begin_time.filter(|value| *value > now);
                 let fits_now = job.requested_cpus.saturating_mul(job.requested_tasks)
                     <= config.total_cpus.saturating_sub(used_cpus)
                     && job.requested_memory_mb <= config.total_memory_mb.saturating_sub(used_memory_mb)
                     && job.requested_gpus <= config.total_gpus.saturating_sub(used_gpus);
                 if fits_now {
-                    Some(format_timestamp(now))
+                    Some(format_timestamp(begin_time.unwrap_or(now)))
                 } else {
-                    running_release.map(format_timestamp)
+                    match (running_release, begin_time) {
+                        (Some(release), Some(begin)) => Some(format_timestamp(release.max(begin))),
+                        (Some(release), None) => Some(format_timestamp(release)),
+                        (None, Some(begin)) => Some(format_timestamp(begin)),
+                        (None, None) => None,
+                    }
                 }
             }
             _ => None,
@@ -2244,7 +2439,8 @@ mod tests {
         CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
         load_sbatch_env_overrides_with, merge_batch_directives, parse_signal_name,
-        parse_time_filter, parse_warning_signal, resolve_cpu_bind_ids, resolve_export_spec,
+        parse_begin_time, parse_time_filter, parse_warning_signal, resolve_cpu_bind_ids,
+        resolve_export_spec,
     };
     use crate::config::AppConfig;
     use crate::job::{JobRecord, JobState, OpenMode};
@@ -2334,6 +2530,8 @@ mod tests {
             gpus: Some(1),
             constraint: None,
             time_limit_secs: Some(600),
+            begin: None,
+            exclusive: false,
             dependency: None,
             array_spec: None,
             output_path: None,
@@ -2426,6 +2624,15 @@ mod tests {
             .expect("cpu bind")
             .expect("cpu ids");
         assert_eq!(cpu_ids, vec![0, 2]);
+    }
+
+    #[test]
+    fn phase4_begin_time_supports_now_offset() {
+        let before = super::now_ts();
+        let begin = parse_begin_time("now+00:10:00").expect("begin time");
+        let after = super::now_ts();
+        assert!(begin >= before + 600);
+        assert!(begin <= after + 600);
     }
 
     #[test]
@@ -2540,6 +2747,8 @@ mod tests {
             state_reason: None,
             term_signal: None,
             time_limit_secs: Some(300),
+            begin_time: None,
+            exclusive: false,
             export_env: Vec::new(),
             open_mode: OpenMode::Truncate,
             warning_signal: None,

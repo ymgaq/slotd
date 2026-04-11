@@ -228,6 +228,7 @@ fn schedule_pending_jobs(store: &Store, runner: &mut Runner) -> Result<()> {
                 job.requested_tasks,
                 job.requested_memory_mb,
                 job.requested_gpus,
+                job.exclusive,
             )?;
             if !fits {
                 store.mark_state(job.id, JobState::Pending, Some("Resources"))?;
@@ -262,6 +263,7 @@ fn submit_run(
         request.requested_tasks,
         request.requested_memory_mb,
         request.requested_gpus,
+        request.exclusive,
     )?;
     if immediate && !can_start_now {
         return Ok(Response::Error {
@@ -287,6 +289,7 @@ fn submit_alloc(store: &Store, request: SubmitRequest, immediate: bool) -> Resul
         request.requested_tasks,
         request.requested_memory_mb,
         request.requested_gpus,
+        request.exclusive,
     )?;
     if immediate && !can_start_now {
         return Ok(Response::Error {
@@ -309,7 +312,14 @@ fn resources_fit(
     requested_tasks: u32,
     requested_memory_mb: u64,
     requested_gpus: u32,
+    exclusive: bool,
 ) -> Result<bool> {
+    if store.any_running_exclusive_job()? {
+        return Ok(false);
+    }
+    if exclusive && store.any_running_top_level_job()? {
+        return Ok(false);
+    }
     let (available_cpus, available_memory_mb, available_gpus) = store.available_resources()?;
     let total_requested_cpus = requested_cpus.saturating_mul(requested_tasks);
     let enough_base =
@@ -322,6 +332,9 @@ fn resources_fit(
 }
 
 fn pending_block_reason<'a>(store: &'a Store, job: &'a JobRecord) -> Result<Option<&'static str>> {
+    if job.begin_time.is_some_and(|value| value > now_ts()) {
+        return Ok(Some("BeginTime"));
+    }
     if job.held {
         return Ok(Some("JobHeldUser"));
     }
@@ -336,6 +349,14 @@ fn pending_block_reason<'a>(store: &'a Store, job: &'a JobRecord) -> Result<Opti
     }
 
     Ok(None)
+}
+
+fn now_ts() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 fn dependency_satisfied(store: &Store, job: &JobRecord) -> Result<bool> {

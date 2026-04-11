@@ -12,6 +12,8 @@ pub struct BatchDirectives {
     pub gpus: Option<u32>,
     pub constraint: Option<String>,
     pub time_limit_secs: Option<u64>,
+    pub begin: Option<String>,
+    pub exclusive: bool,
     pub dependency: Option<String>,
     pub array_spec: Option<String>,
     pub output_path: Option<String>,
@@ -260,6 +262,15 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if token == "--constraint" {
             directives.constraint = Some(require_value(token, next)?.to_string());
             2
+        } else if let Some(value) = token.strip_prefix("--begin=") {
+            directives.begin = Some(value.to_string());
+            1
+        } else if token == "--begin" {
+            directives.begin = Some(require_value(token, next)?.to_string());
+            2
+        } else if token == "--exclusive" {
+            directives.exclusive = true;
+            1
         } else if let Some(value) = token.strip_prefix("--time=") {
             directives.time_limit_secs = Some(parse_time_limit_secs(value)?);
             1
@@ -441,6 +452,18 @@ echo start
 ";
         let directives = parse_directives(script).expect("parse directives");
         assert_eq!(directives.job_name.as_deref(), Some("before"));
+    }
+
+    #[test]
+    fn parses_begin_and_exclusive_directives() {
+        let script = "\
+#SBATCH --begin now+00:10:00
+#SBATCH --exclusive
+echo hi
+";
+        let directives = parse_directives(script).expect("parse directives");
+        assert_eq!(directives.begin.as_deref(), Some("now+00:10:00"));
+        assert!(directives.exclusive);
     }
 
     #[test]

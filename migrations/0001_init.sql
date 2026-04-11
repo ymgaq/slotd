@@ -34,6 +34,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     script_path TEXT NOT NULL DEFAULT '',
     stdout_path TEXT NOT NULL DEFAULT '',
     stderr_path TEXT NOT NULL DEFAULT '',
+    begin_time INTEGER,
+    exclusive INTEGER NOT NULL DEFAULT 0,
     export_env TEXT NOT NULL DEFAULT '',
     open_mode TEXT NOT NULL DEFAULT 'truncate',
     warning_signal INTEGER,

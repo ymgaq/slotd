@@ -321,6 +321,8 @@ Supported options:
 - `-D`, `--chdir <path>`
 - `-d`, `--dependency <spec>`
 - `-a`, `--array <spec>`
+- `--begin <time>`
+- `--exclusive`
 - `--parsable`
 - `-W`, `--wait`
 
@@ -332,6 +334,8 @@ Behavior:
 - default partition is the configured default partition
 - default resources are `cpus=1`, `ntasks=1`, `mem=512MB`
 - default GPU request depends on the selected partition
+- `--begin` supports epoch seconds, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, and `now+<duration>`
+- `--exclusive` prevents the job from sharing the single host with other running top-level jobs
 - `--parsable` prints only the job id
 - otherwise it prints `Submitted batch job <id>`
 - `--wait` waits for completion and exits nonzero when any batch task fails
@@ -380,6 +384,10 @@ Supported options:
 - `-D`, `--chdir <path>`
 - `--immediate`
 - `--pty`
+- `--constraint <feature>`
+- `--cpu-bind <mode>`
+- `--label`
+- `--unbuffered`
 - `--no-wait`
 
 Execution modes:
@@ -400,6 +408,8 @@ Behavior details:
 - `--constraint` is checked against the local host feature set, not against remote nodes
 - `--pty` currently selects the foreground execution path; it does not implement terminal allocation features beyond direct foreground execution
 - `--cpu-bind` supports `none`, `cores`, and `map_cpu:<id,id,...>`
+- `--label` prefixes foreground stdout/stderr lines with `0: `
+- `--unbuffered` flushes foreground forwarded output eagerly
 - daemon-managed `srun --no-wait` prints `Submitted run job <id>`
 - nonzero exit codes are propagated back to the caller
 
@@ -448,6 +458,7 @@ Supported options:
 - `-o`, `--format <spec>`
 - `-S`, `--sort <spec>`
 - `-l`, `--long`
+- `--array`
 - `--noheader`
 
 Current behavior:
@@ -455,7 +466,7 @@ Current behavior:
 - default state filter is `PENDING,RUNNING`
 - `--all` disables the default state filter
 - steps are not shown in `squeue`; only top-level jobs are shown
-- `-l/--long` is accepted but currently does not switch to a different format
+- `--array` renders array task job ids as `<array_job_id>_<task_id>`
 
 Default columns:
 

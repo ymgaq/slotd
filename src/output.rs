@@ -10,6 +10,16 @@ pub fn print_squeue_jobs(
     fields: &[SqueueField],
     noheader: bool,
 ) {
+    print_squeue_jobs_with_options(config, jobs, fields, noheader, false);
+}
+
+pub fn print_squeue_jobs_with_options(
+    config: &AppConfig,
+    jobs: &[JobRecord],
+    fields: &[SqueueField],
+    noheader: bool,
+    array_mode: bool,
+) {
     print_table(
         fields.iter().map(|field| TableColumn {
             header: field.header().to_string(),
@@ -19,7 +29,10 @@ pub fn print_squeue_jobs(
         jobs.iter().map(|job| {
             fields
                 .iter()
-                .map(|field| field.render(config, job))
+                .map(|field| match field {
+                    SqueueField::JobId if array_mode => format_squeue_job_id(job),
+                    _ => field.render(config, job),
+                })
                 .collect::<Vec<_>>()
         }),
         noheader,
@@ -195,6 +208,7 @@ pub fn print_squeue_jobs_with_start_times(
     fields: &[SqueueField],
     start_times: &HashMap<i64, String>,
     noheader: bool,
+    array_mode: bool,
 ) {
     print_table(
         fields.iter().map(|field| TableColumn {
@@ -206,6 +220,7 @@ pub fn print_squeue_jobs_with_start_times(
             fields
                 .iter()
                 .map(|field| match field {
+                    SqueueField::JobId if array_mode => format_squeue_job_id(job),
                     SqueueField::StartTime => start_times.get(&job.id).cloned().unwrap_or_default(),
                     _ => field.render(config, job),
                 })
@@ -213,6 +228,13 @@ pub fn print_squeue_jobs_with_start_times(
         }),
         noheader,
     );
+}
+
+fn format_squeue_job_id(job: &JobRecord) -> String {
+    match (job.array_job_id, job.array_task_id) {
+        (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
+        _ => job.id.to_string(),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
