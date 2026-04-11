@@ -23,12 +23,15 @@ use crate::output::{
 };
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
 
+#[cfg(test)]
 const SUPPORTED_ROOT_COMMANDS: &[&str] = &[
     "daemon", "sbatch", "srun", "salloc", "scontrol", "squeue", "sacct", "scancel", "sinfo",
 ];
+#[cfg(test)]
 const SUPPORTED_USER_COMMANDS: &[&str] = &[
     "sbatch", "srun", "salloc", "scontrol", "squeue", "sacct", "scancel", "sinfo",
 ];
+#[cfg(test)]
 const CORE_RESOURCE_LONG_FLAGS: &[&str] = &[
     "job-name",
     "partition",

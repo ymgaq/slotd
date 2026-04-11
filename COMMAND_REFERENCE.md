@@ -1,33 +1,32 @@
-# slotd Command Reference
+# slotd コマンドリファレンス
 
-## Purpose
+## 目的
 
-This document describes the current `slotd` command surface and runtime behavior.
-It is an implementation reference, not a roadmap.
+この文書は、現在の `slotd` 実装が提供しているコマンド体系と実行時挙動をまとめた実装リファレンスです。ロードマップではなく、現時点で実際に使える機能を説明します。
 
-Related documents:
+関連文書:
 
-- [DESIGN.md](/home/yu_yamaguchi/workspace/slotd/DESIGN.md): target direction and future phases
-- [IMPLEMENTED.md](/home/yu_yamaguchi/workspace/slotd/IMPLEMENTED.md): compact summary of implemented features
+- [DESIGN.md](/home/yu_yamaguchi/workspace/slotd/DESIGN.md): 設計方針
+- [IMPLEMENTED.md](/home/yu_yamaguchi/workspace/slotd/IMPLEMENTED.md): 実装済み機能の要約
 
-## Scope
+## スコープ
 
-`slotd` is currently a single-node, Slurm-like scheduler with:
+`slotd` は単一ホスト上で動作する Slurm 風スケジューラです。
 
-- one local daemon
-- one local SQLite state database
-- one local execution host
-- batch jobs, interactive runs, allocations, and job steps
-- CPU, memory, GPU reservation tracking
-- optional cgroup v2 enforcement
+- ローカル daemon 1 つ
+- ローカル SQLite DB 1 つ
+- 実行ノードは 1 台のみ
+- batch job、interactive run、allocation、step を扱う
+- CPU、memory、GPU は予約ベースで管理する
+- `SLOTD_CGROUP_BASE` を設定した場合のみ cgroup v2 による制限を試みる
 
-It is not a multi-node Slurm controller.
+multi-node Slurm controller ではありません。
 
-## Binary And Command Aliases
+## バイナリとエイリアス
 
-The main binary is `slotd`.
+メインバイナリは `slotd` です。
 
-Supported subcommands:
+利用可能なサブコマンド:
 
 - `slotd daemon`
 - `slotd sbatch`
@@ -39,7 +38,7 @@ Supported subcommands:
 - `slotd scancel`
 - `slotd sinfo`
 
-`argv[0]` alias dispatch is implemented, so the same binary can be invoked as:
+`argv[0]` によるエイリアス起動も実装されています。
 
 - `sbatch`
 - `srun`
@@ -50,114 +49,140 @@ Supported subcommands:
 - `scancel`
 - `sinfo`
 
-## Runtime Layout
+## ランタイム配置
 
-Default runtime root:
+デフォルトのランタイムルートは `var/` です。
 
-- `var/`
+主なパス:
 
-Runtime paths under the root:
+- socket: `var/run/slotd.sock`
+- database: `var/lib/state.db`
+- jobs: `var/lib/jobs/<job_id>/`
+- batch script: `var/lib/jobs/<job_id>/script.sh`
+- daemon wrapper script: `var/lib/jobs/<job_id>/runner.sh`
+- daemon exit status file: `var/lib/jobs/<job_id>/exit_status`
 
-- socket: `run/slotd.sock`
-- database: `lib/state.db`
-- jobs: `lib/jobs/<job_id>/`
-- batch script: `lib/jobs/<job_id>/script.sh`
-- daemon wrapper script: `lib/jobs/<job_id>/runner.sh`
-- daemon exit status file: `lib/jobs/<job_id>/exit_status`
+ランタイムルートは `SLOTD_ROOT` で変更できます。`SLOTD_ROOT` 未指定時は相対パスの `var/` を使うため、daemon と client は同じ作業ディレクトリ、または同じ絶対パスの `SLOTD_ROOT` を共有する必要があります。
 
-The root can be changed with:
+## 設定用環境変数
 
-- `SLOTD_ROOT`
-
-## Configuration Environment Variables
-
-### Partition Configuration
+### パーティション
 
 - `SLOTD_CPU_PARTITIONS`
-  - comma-separated CPU partition names
-  - default: `cpu`
+  - CPU partition 名のカンマ区切り
+  - デフォルトは `cpu`
 - `SLOTD_GPU_PARTITIONS`
-  - comma-separated GPU partition names
-  - default: `gpu` when GPUs are available
+  - GPU partition 名のカンマ区切り
+  - GPU が存在する場合のデフォルトは `gpu`
 
-### Resource Configuration
+### リソース
 
 - `SLOTD_GPU_COUNT`
-  - total GPU slots on the local host
-  - if unset, `slotd` tries to infer this from `nvidia-smi`
+  - ローカルホストの GPU スロット数
+  - 未設定時は `nvidia-smi` から推定を試みる
 - `SLOTD_GPU_MODEL`
-  - display name used for GPU reporting
-  - if unset, `slotd` tries to infer this from `nvidia-smi`
+  - GPU 表示名
+  - 未設定時は `nvidia-smi` から推定を試みる
+- `SLOTD_FEATURES`
+  - `--constraint` 評価に使う feature 名のカンマ区切り
+  - 暗黙に `cpu` が追加され、GPU がある場合は `gpu` も追加される
 
-### Runtime Enforcement
+### 実行制御
 
 - `SLOTD_CGROUP_BASE`
-  - cgroup v2 base directory used for per-job cgroups
-  - when set, launch paths try to create `slotd-<job_id>` directories below this base
-  - foreground and daemon launch paths both use it
-  - cgroup setup failures are treated as launch failures
+  - cgroup v2 のベースディレクトリ
+  - 設定時は job ごとの cgroup を作成して `memory.max` と `cpu.max` を設定する
+- `SLOTD_NOTIFY_CMD`
+  - terminal な top-level job 完了時に `/bin/sh -lc` で実行する通知 hook
 
-## Resource Model
+### `sbatch` の環境変数オーバーライド
 
-`slotd` tracks and schedules these resources:
+`sbatch` では、対応する `SBATCH_*` 環境変数が `#SBATCH` より優先されます。主な対応項目:
 
-- CPUs
+- `SBATCH_JOB_NAME`
+- `SBATCH_PARTITION`
+- `SBATCH_CPUS_PER_TASK`
+- `SBATCH_NTASKS`
+- `SBATCH_MEM`
+- `SBATCH_TIME`
+- `SBATCH_GPUS`
+- `SBATCH_CONSTRAINT`
+- `SBATCH_BEGIN`
+- `SBATCH_EXCLUSIVE`
+- `SBATCH_REQUEUE`
+- `SBATCH_OUTPUT`
+- `SBATCH_ERROR`
+- `SBATCH_CHDIR`
+- `SBATCH_DEPENDENCY`
+- `SBATCH_ARRAY_INX`
+- `SBATCH_EXPORT`
+- `SBATCH_EXPORT_FILE`
+- `SBATCH_OPEN_MODE`
+- `SBATCH_SIGNAL`
+
+`SBATCH_EXCLUSIVE` と `SBATCH_REQUEUE` は `1|true|yes` を真として扱います。
+
+## リソースモデル
+
+`slotd` が予約・スケジューリング対象として扱うのは次です。
+
+- CPU
 - memory
-- GPUs
+- GPU
 
-Current behavior:
+現在の挙動:
 
-- CPU reservation is `ntasks * cpus-per-task`
-- memory is stored in MB
-- GPUs are stored as integer slots
-- scheduling uses reserved capacity, not measured real-time usage
-- the local host is the only execution node
+- CPU 予約量は `ntasks * cpus-per-task`
+- memory は MB 単位で保持する
+- GPU は整数スロット数で保持する
+- admission は予約量ベースで、実時間の使用率では判定しない
+- 実行ノードは常にローカルホスト 1 台のみ
 
-Resource defaults:
+デフォルト値:
 
 - CPUs: `available_parallelism()`
 - memory: `16384 MB`
-- GPUs: `SLOTD_GPU_COUNT` or `nvidia-smi`
+- GPUs: `SLOTD_GPU_COUNT` または `nvidia-smi` の結果
 
-Partition behavior:
+partition の挙動:
 
-- only configured partition names are accepted
-- if no GPU capacity exists, GPU partitions are not exposed
-- if a GPU partition is selected and `--gpus` is omitted, the default GPU request is `1`
-- otherwise the default GPU request is `0`
-- optional host features come from `SLOTD_FEATURES`, plus implicit `cpu` and `gpu` markers
+- 設定済み partition 名のみ受け付ける
+- GPU が無い場合は GPU partition を出さない
+- GPU partition で `--gpus` 未指定時の既定値は `1`
+- それ以外の partition で `--gpus` 未指定時の既定値は `0`
+- GPU job 開始時は空いている GPU ID を割り当て、`CUDA_VISIBLE_DEVICES` に設定する
 
-## Job Model
+## ジョブモデル
 
-Each persisted record is one of:
+永続化されるレコードは次のいずれかです。
 
-- a regular batch job
-- an allocation-only job
-- an array task job
-- a step job under an allocation
+- 通常の batch job
+- allocation-only job
+- array task job
+- allocation 配下の step job
 
-Important record fields:
+主要フィールド:
 
 - job id
-- optional parent job id
-- optional step id
+- parent job id
+- step id
 - job name
 - user name
 - partition
 - command
 - working directory
-- requested CPUs, tasks, memory, GPUs
-- dependency string
+- requested CPUs / tasks / memory / GPUs
+- dependency
 - array metadata
-- requeue flag and requeue count
+- `requeue` と `requeue_count`
 - time limit
-- pid, pgid
-- exit code, terminating signal, state reason
-- max RSS when observed
+- pid / pgid
+- exit code / terminating signal / state reason
+- `max_rss_kb`
 
-## Job States
+## ジョブ状態
 
-Implemented states:
+実装済み状態:
 
 - `PENDING`
 - `RUNNING`
@@ -168,7 +193,7 @@ Implemented states:
 - `TIMEOUT`
 - `OUT_OF_MEMORY`
 
-Short codes:
+短縮表記:
 
 - `PD`
 - `R`
@@ -179,7 +204,7 @@ Short codes:
 - `TO`
 - `OOM`
 
-Terminal states:
+terminal state:
 
 - `COMPLETED`
 - `FAILED`
@@ -187,34 +212,39 @@ Terminal states:
 - `TIMEOUT`
 - `OUT_OF_MEMORY`
 
-## Scheduling Rules
+## スケジューリング規則
 
-The daemon loop runs every `300ms`.
+daemon loop は `300ms` 間隔で動作します。
 
-Pending job admission checks:
+`PENDING` job の admission 時に見るもの:
 
-- held jobs remain blocked with reason `JobHeldUser`
-- unsatisfied dependencies block with reason `Dependency`
-- array task concurrency limits block with reason `JobArrayTaskLimit`
-- insufficient reserved resources block with reason `Resources`
+- held job は `JobHeldUser` reason のまま待機
+- dependency 未解決なら `Dependency`
+- array の `%limit` に引っかかると `JobArrayTaskLimit`
+- リソース不足なら `Resources`
+- `begin_time` に達していない job は待機
+- `exclusive` job は他の top-level running job と共存しない
 
-Queue ordering:
+並び順:
 
-- jobs are scheduled in FIFO order by submission time
-- pending array tasks are interleaved by array group to reduce starvation
+- 基本は submission order
+- `Priority` が設定されている場合は pending queue で優先される
+- array task は array group 単位で交互に取り出され、同一 array が連続占有しにくい
 
-## Batch Script Parsing
+full Slurm の fairshare / QoS / preemption / backfill はありません。
 
-`#SBATCH` directives are parsed only from the initial comment block.
+## `#SBATCH` 解析
 
-Behavior:
+`#SBATCH` は script 先頭のコメントブロックのみ解析します。
 
-- `#!` lines are ignored
-- blank lines and comment lines are allowed before the first executable line
-- once the first non-comment, non-empty line is seen, later `#SBATCH` lines are ignored
-- command-line options override parsed `#SBATCH` values
+挙動:
 
-Supported `#SBATCH` directives:
+- `#!` 行は無視する
+- 空行とコメント行は許可する
+- 最初の非空・非コメント・非 `#SBATCH` 行に到達した後の `#SBATCH` は無視する
+- 優先順位は `CLI > SBATCH_* 環境変数 > #SBATCH > built-in defaults`
+
+対応 `#SBATCH`:
 
 - `-J`, `--job-name`
 - `-p`, `--partition`
@@ -233,45 +263,29 @@ Supported `#SBATCH` directives:
 - `-d`, `--dependency`
 - `-a`, `--array`
 
-Environment precedence:
+## 出力パス展開
 
-- command-line options override matching `SBATCH_*` environment variables
-- matching `SBATCH_*` environment variables override `#SBATCH` directives
-- `SBATCH_REQUEUE=1|true|yes` enables `sbatch` requeue by default
-
-Phase 5 additions:
-
-- `sbatch --requeue` requeues a top-level job once after `FAILED`, `TIMEOUT`, or `OUT_OF_MEMORY`
-- `COMPLETED` and `CANCELLED` jobs do not auto-requeue
-- `SLOTD_NOTIFY_CMD` registers a best-effort shell hook for terminal top-level job completion
-- the hook receives `SLOTD_JOB_ID`, `SLOTD_JOB_NAME`, `SLOTD_JOB_STATE`, `SLOTD_JOB_PARTITION`, and `SLOTD_JOB_REASON`
-
-## Output Path Expansion
-
-Batch output patterns support:
+batch output pattern では次を使えます。
 
 - `%j`: job id
 - `%A`: array job id
-- `%a`: array task id, or `4294967294` when not in an array task
+- `%a`: array task id
 - `%x`: job name
 - `%u`: user name
 - `%N`: hostname
-- `%%`: literal `%`
+- `%%`: `%`
 
-Default stdout path:
+既定値:
 
-- non-array jobs: `slurm-%j.out`
-- array jobs: `slurm-%A_%a.out`
+- 非 array job の stdout: `slurm-%j.out`
+- array job の stdout: `slurm-%A_%a.out`
+- `--error` 未指定時の stderr は stdout と同じファイル
 
-Default stderr path:
+相対パスは job の working directory 基準で解決されます。
 
-- same file as stdout when `--error` is not specified
+## export される環境変数
 
-Relative output paths are resolved against the job working directory.
-
-## Exported Environment Variables
-
-Foreground execution paths export these variables to child processes:
+foreground 実行では子プロセスに次を設定します。
 
 - `SLURM_JOB_ID`
 - `SLURM_JOB_NAME`
@@ -282,49 +296,49 @@ Foreground execution paths export these variables to child processes:
 - `SLURM_CPUS_PER_TASK`
 - `SLURM_STEP_ID`
 
-Array jobs also export:
+array job では追加で:
 
 - `SLURM_ARRAY_JOB_ID`
 - `SLURM_ARRAY_TASK_ID`
 
-GPU jobs also export:
+GPU job では追加で:
 
 - `CUDA_VISIBLE_DEVICES`
 
-For a step under an allocation:
+allocation 内 step では:
 
-- `SLURM_JOB_ID` is the parent allocation id
-- `SLURM_STEP_ID` is the persisted step id
+- `SLURM_JOB_ID` は親 allocation id
+- `SLURM_STEP_ID` は step id
 
-## Command Reference
+## コマンド別仕様
 
 ### `slotd daemon`
 
-Starts the local scheduler daemon.
+ローカル scheduler daemon を起動します。
 
-Behavior:
+挙動:
 
-- creates runtime directories
-- removes an existing socket file if present
-- binds the UNIX socket
-- opens SQLite state
-- recovers adoptable running jobs
-- polls running jobs, enforces timeouts, and schedules pending jobs
+- runtime directory を作成する
+- 既存 socket file があれば削除する
+- UNIX socket を bind する
+- SQLite state を開く
+- restart recovery を試みる
+- running job の poll、timeout 処理、pending job の scheduling を繰り返す
 
-The daemon stays in the foreground.
+daemon は foreground に居続けます。
 
 ### `slotd sbatch`
 
-Submit a batch job or wrapped command.
+batch job または `--wrap` の command を投入します。
 
-Forms:
+形式:
 
 ```bash
 slotd sbatch [options] <script>
 slotd sbatch [options] --wrap '<command>'
 ```
 
-Supported options:
+対応オプション:
 
 - `--wrap <command>`
 - `-J`, `--job-name <name>`
@@ -337,29 +351,35 @@ Supported options:
 - `-o`, `--output <path>`
 - `-e`, `--error <path>`
 - `-D`, `--chdir <path>`
+- `--constraint <feature>`
 - `-d`, `--dependency <spec>`
 - `-a`, `--array <spec>`
+- `--export <spec>`
+- `--export-file <path>`
+- `--open-mode <append|truncate>`
+- `--signal <signal[@seconds]>`
 - `--begin <time>`
 - `--exclusive`
+- `--requeue`
 - `--parsable`
 - `-W`, `--wait`
 
-Behavior:
+挙動:
 
-- script mode reads the script from disk
-- `--wrap` creates an internal shell script around the command
-- the job is persisted as `PENDING`
-- default partition is the configured default partition
-- default resources are `cpus=1`, `ntasks=1`, `mem=512MB`
-- default GPU request depends on the selected partition
-- `--begin` supports epoch seconds, `YYYY-MM-DD`, `YYYY-MM-DDTHH:MM:SS`, and `now+<duration>`
-- `--exclusive` prevents the job from sharing the single host with other running top-level jobs
-- `--parsable` prints only the job id
-- otherwise it prints `Submitted batch job <id>`
-- `--wait` waits for completion and exits nonzero when any batch task fails
-- for array jobs, `--wait` waits for all persisted tasks of the array root
+- script mode はファイル内容を読み込み、job directory に `script.sh` として保存する
+- `--wrap` は内部的に shell script を生成する
+- job は `PENDING` で永続化される
+- 既定 partition は設定済み default partition
+- 既定 resource は `cpus=1`, `ntasks=1`, `mem=512MB`
+- GPU 既定値は partition に依存する
+- `--begin` は epoch 秒、`YYYY-MM-DD`、`YYYY-MM-DDTHH:MM:SS`、`now+<duration>` を受け付ける
+- `--exclusive` を付けた top-level job は単一ホストを排他的に使う
+- `--parsable` は job id のみ出力する
+- 通常は `Submitted batch job <id>` を出力する
+- `--wait` は完了を待ち、失敗時は非 0 で返す
+- array job の `--wait` は array root 配下の全 task 完了を待つ
 
-Dependency syntax currently implemented:
+dependency 形式:
 
 - `after:<jobid>[,<jobid>...]`
 - `afterany:<jobid>[,<jobid>...]`
@@ -367,28 +387,46 @@ Dependency syntax currently implemented:
 - `afternotok:<jobid>[,<jobid>...]`
 - `singleton`
 
-Array syntax currently implemented:
+array 形式:
 
-- comma-separated task ids
-- ranges: `0-7`
-- stepped ranges: `0-15:2`
-- concurrency limits: `0-31%4`
+- 単一 task の列挙
+- range: `0-7`
+- stepped range: `0-15:2`
+- concurrency limit: `0-31%4`
 
-Notes:
+`--export`:
 
-- there is no separate umbrella array parent record; array tasks are persisted as normal job records and the first task id becomes the array root id
+- `ALL` で現在環境を引き継ぐ
+- `NONE` で seed を消す
+- `KEY=VALUE,...` を追加できる
+
+`--signal`:
+
+- signal 名または番号を解釈する
+- `B:` prefix は受け付けるが、現状では batch script 単位の warning signal として扱う
+- offset 未指定時は `60` 秒前
+
+`--requeue`:
+
+- top-level job が `FAILED`、`TIMEOUT`、`OUT_OF_MEMORY` で終わった場合に 1 回だけ `PENDING` へ戻す
+- `COMPLETED` と `CANCELLED` は auto-requeue しない
+
+注意:
+
+- full Slurm のような array umbrella parent record は持たない
+- array task は通常 job record として永続化され、最初の task が array root id になる
 
 ### `slotd srun`
 
-Run a command in the foreground, or submit a daemon-managed command job depending on options.
+foreground で command を実行します。`--no-wait` の場合のみ daemon-managed job を submit します。
 
-Form:
+形式:
 
 ```bash
 slotd srun [options] -- <command...>
 ```
 
-Supported options:
+対応オプション:
 
 - `-J`, `--job-name <name>`
 - `-p`, `--partition <partition>`
@@ -408,40 +446,42 @@ Supported options:
 - `--unbuffered`
 - `--no-wait`
 
-Execution modes:
+実行モード:
 
-- inside an active allocation:
-  - `srun` creates a step record and runs the command directly in the foreground
-- outside an allocation:
-  - `srun` creates an allocation-like record, waits for it to run, then runs the command directly in the foreground
-  - a step record is also created for accounting
-  - `-o/-e` only change where foreground output is written
-  - only `--no-wait` submits a daemon-managed command job
+- 既存 allocation 内:
+  - step record を作り、foreground で直接実行する
+- allocation 外:
+  - allocation-like top-level record を作る
+  - `RUNNING` になるまで待つ
+  - foreground で実行する
+  - accounting 用 step record も作る
+- `--no-wait`:
+  - daemon-managed command job を submit する
+  - `Submitted run job <id>` を出す
 
-Behavior details:
+挙動:
 
-- default resources are the same as `sbatch`
-- default job name is the command basename
-- `--immediate` fails if resources are not available immediately
-- `--constraint` is checked against the local host feature set, not against remote nodes
-- `--pty` currently selects the foreground execution path; it does not implement terminal allocation features beyond direct foreground execution
-- `--cpu-bind` supports `none`, `cores`, and `map_cpu:<id,id,...>`
-- `--label` prefixes foreground stdout/stderr lines with `0: `
-- `--unbuffered` flushes foreground forwarded output eagerly
-- daemon-managed `srun --no-wait` prints `Submitted run job <id>`
-- nonzero exit codes are propagated back to the caller
+- 既定 resource は `sbatch` と同じ
+- 既定 job name は command basename
+- `--immediate` は即時に資源が取れなければ失敗する
+- `--constraint` はローカル host の feature に対して評価する
+- `--pty` は foreground path を選ぶだけで、完全な terminal allocation 機能ではない
+- `--cpu-bind` は `none`、`cores`、`map_cpu:<id,id,...>` をサポートする
+- `--label` は foreground 出力の各行頭に `0: ` を付ける
+- `--unbuffered` は foreground 転送時に即 flush する
+- foreground 実行の終了コードは caller に返す
 
 ### `slotd salloc`
 
-Request an allocation and then run a foreground command inside it.
+allocation を取り、その中で foreground command を実行します。
 
-Form:
+形式:
 
 ```bash
 slotd salloc [options] [command...]
 ```
 
-Supported options:
+対応オプション:
 
 - `-J`, `--job-name <name>`
 - `-p`, `--partition <partition>`
@@ -451,22 +491,23 @@ Supported options:
 - `-t`, `--time <time>`
 - `-G`, `--gpus <n>`
 - `-D`, `--chdir <path>`
+- `--constraint <feature>`
 - `--immediate`
 
-Behavior:
+挙動:
 
-- when no command is provided, the user shell is started
-- the allocation record is created with `allocation_only = true`
-- `salloc` prints `Granted job allocation <id>`
-- it waits until the allocation becomes `RUNNING`
-- then it runs the target command in the foreground with Slurm-like environment variables
-- exit status is propagated to the caller
+- command 未指定時は shell を起動する
+- top-level record は `allocation_only = true` として作られる
+- `Granted job allocation <id>` を出力する
+- allocation が `RUNNING` になるまで待つ
+- その後、Slurm 風環境変数付きで foreground 実行する
+- 終了コードは caller に返る
 
 ### `slotd squeue`
 
-Show queue state for persisted jobs.
+永続化された top-level job の queue 状態を表示します。
 
-Supported options:
+対応オプション:
 
 - `--all`
 - `-t`, `--states <state1,state2,...>`
@@ -476,17 +517,19 @@ Supported options:
 - `-o`, `--format <spec>`
 - `-S`, `--sort <spec>`
 - `-l`, `--long`
+- `--start`
 - `--array`
 - `--noheader`
 
-Current behavior:
+現在の挙動:
 
-- default state filter is `PENDING,RUNNING`
-- `--all` disables the default state filter
-- steps are not shown in `squeue`; only top-level jobs are shown
-- `--array` renders array task job ids as `<array_job_id>_<task_id>`
+- 既定 filter は `PENDING,RUNNING`
+- `--all` で既定 state filter を外す
+- step は表示しない
+- `--array` は array task の JOBID を `<array_job_id>_<task_id>` 形式で出す
+- `--start` を付けると推定開始時刻を `START_TIME` 列として表示する
 
-Default columns:
+既定列:
 
 - `JOBID`
 - `PARTITION`
@@ -496,17 +539,48 @@ Default columns:
 - `TIME`
 - `NODELIST(REASON)`
 
-Supported field names for `-o/--format`:
+`-l/--long` の既定列:
+
+- `JOBID`
+- `PARTITION`
+- `NAME`
+- `USER`
+- `ST`
+- `TIME`
+- `TIME_LIMIT`
+- `NTASKS`
+- `CPUS`
+- `REQ_MEM`
+- `REQ_GPU`
+- `NODELIST(REASON)`
+
+`--start` を `-o` なしで使う場合の既定列:
+
+- `JOBID`
+- `PARTITION`
+- `NAME`
+- `USER`
+- `ST`
+- `START_TIME`
+- `NODELIST(REASON)`
+
+`-o/--format` で使える field 名:
 
 - `JobID`
 - `Partition`
-- `Name` or `JobName`
+- `Name`, `JobName`
 - `User`
-- `ST` or `State`
-- `Time` or `Elapsed`
+- `ST`, `State`
+- `Time`, `Elapsed`
+- `TimeLimit`, `Time_Limit`
+- `NTasks`
+- `CPUS`, `ReqCPUS`
+- `ReqMem`
+- `ReqGPU`, `ReqGPUS`
+- `Start`, `StartTime`
 - `NodeList(Reason)`, `NodeListReason`, `Reason`, `NodeList`
 
-Supported `%` tokens for `-o/--format`:
+`%` 形式で使える code:
 
 - `%i`
 - `%P`
@@ -514,9 +588,10 @@ Supported `%` tokens for `-o/--format`:
 - `%u`
 - `%t`, `%T`
 - `%M`
+- `%S`
 - `%R`, `%N`
 
-Supported sort keys for `-S/--sort`:
+sort key:
 
 - `i`, `jobid`
 - `p`, `partition`
@@ -524,13 +599,13 @@ Supported sort keys for `-S/--sort`:
 - `t`, `state`
 - `m`, `time`
 
-A leading `-` reverses sort order.
+先頭に `-` を付けると降順です。
 
 ### `slotd sacct`
 
-Show persisted accounting data, including completed jobs and steps.
+完了済み job や step を含む accounting 情報を表示します。
 
-Supported options:
+対応オプション:
 
 - `-j`, `--jobs <id1,id2,...>`
 - `-s`, `--state <state1,state2,...>`
@@ -542,20 +617,20 @@ Supported options:
 - `-P`, `--parsable2`
 - `-n`, `--noheader`
 
-Current behavior:
+現在の挙動:
 
-- includes both top-level jobs and steps
-- step ids are rendered as `<job_id>.<step_id>`
-- array tasks are rendered as `<array_job_id>_<task_id>`
-- `ExitCode` is rendered as `<exit_code>:<signal>`
-- `-P/--parsable2` uses `|` as a delimiter
+- top-level job と step の両方を表示する
+- step id は `<job_id>.<step_id>`
+- array task は `<array_job_id>_<task_id>`
+- `ExitCode` は `<exit_code>:<signal>`
+- `-P/--parsable2` は `|` 区切り
 
-Time filter formats currently accepted:
+受け付ける時刻形式:
 
 - `YYYY-MM-DD`
 - `YYYY-MM-DDTHH:MM:SS`
 
-Default columns:
+既定列:
 
 - `JobID`
 - `Partition`
@@ -564,7 +639,7 @@ Default columns:
 - `State`
 - `ExitCode`
 
-Supported field names for `-o/--format`:
+`-o/--format` で使える field 名:
 
 - `JobID`
 - `ArrayJobID`
@@ -588,7 +663,7 @@ Supported field names for `-o/--format`:
 - `BatchFlag`
 - `MaxRSS`
 
-Supported `%` tokens for `-o/--format`:
+`%` 形式で使える code:
 
 - `%i`
 - `%F`
@@ -612,7 +687,7 @@ Supported `%` tokens for `-o/--format`:
 
 ### `slotd scontrol`
 
-Supported forms:
+対応形式:
 
 ```bash
 slotd scontrol show job <job_id>
@@ -621,64 +696,67 @@ slotd scontrol release job <job_id>
 slotd scontrol update job <job_id> KEY=VALUE...
 ```
 
-Supported update keys:
+対応 update key:
 
-- `JobName` or `Name`
+- `JobName`, `Name`
 - `Partition`
-- `TimeLimit` or `Time`
+- `TimeLimit`, `Time`
 - `Priority`
 
-Current mutability rules:
+変更可能条件:
 
-- `JobName` can only be changed while `PENDING`
-- `Partition` can only be changed while `PENDING`
-- `TimeLimit` can be changed until the job reaches a terminal state
-- `Priority` can only be changed while `PENDING`
+- `JobName`: `PENDING` 中のみ
+- `Partition`: `PENDING` 中のみ
+- `TimeLimit`: terminal state 前まで
+- `Priority`: `PENDING` 中のみ
 
-`show job` output includes:
+`show job` の出力内容:
 
-- identity and ownership
-- state and reason
+- identity / ownership
+- state / reason
 - requested resources
 - time limit
-- dependency string
-- submit, start, end timestamps
+- dependency
+- submit / start / end timestamp
 - exit code
 - array metadata
 - batch flag
 - working directory
 - command
-- stdout/stderr paths
-- node list
+- stdout / stderr path
+- nodelist
 - `ReqTRES`
 - `AllocTRES`
 - `MaxRSS`
-- child step summary when steps exist
+- step summary
 
 ### `slotd scancel`
 
-Cancel a top-level job or a recorded step.
+top-level job または記録済み step を cancel または signal します。
 
-Form:
+形式:
 
 ```bash
 slotd scancel <job_id>
 slotd scancel <job_id.step_id>
+slotd scancel --signal <sig> <job_id>
+slotd scancel --signal <sig> <job_id.step_id>
 ```
 
-Behavior:
+挙動:
 
-- pending jobs are marked `CANCELLED` immediately
-- running jobs transition through `COMPLETING`
-- running jobs receive `SIGTERM`, then `SIGKILL` after the grace period
-- cancellation reason is recorded as `CancelledByUser`
-- if a cgroup OOM event is detected during termination, final state is `OUT_OF_MEMORY`
+- `PENDING` job は即座に `CANCELLED`
+- `RUNNING` job は一度 `COMPLETING` を経由する
+- cancel 時は `SIGTERM` を送り、grace period 後に `SIGKILL`
+- reason は `CancelledByUser`
+- 終了時に cgroup OOM が検出されれば最終 state は `OUT_OF_MEMORY`
+- `--signal` は running job に任意 signal を送る
 
 ### `slotd sinfo`
 
-Show partition and host state for the single local node.
+単一ノード上の partition 状態を表示します。
 
-Supported options:
+対応オプション:
 
 - `-p`, `--partition <name1,name2,...>`
 - `-N`, `--Node`
@@ -686,103 +764,145 @@ Supported options:
 - `-o`, `--format <spec>`
 - `--noheader`
 
-Current behavior:
+現在の挙動:
 
-- one row is shown per configured partition
-- the default partition is marked with `*`
-- `-N` and `-l` are accepted but currently do not change rendering
+- 設定済み partition ごとに 1 行表示する
+- default partition には `*` を付ける
+- `-N` は受理するが、単一ノードなので表示粒度は partition 単位のまま
+- `-l` は long format に切り替わる
 
-Default columns:
+既定列:
 
 - `PARTITION`
 - `HOSTNAMES`
 - `STATE`
+- `FEATURES`
 - `GRES_USED`
 
-Supported field names for `-o/--format`:
+`-l/--long` の既定列:
+
+- `PARTITION`
+- `HOSTNAMES`
+- `STATE`
+- `FEATURES`
+- `CPUS`
+- `CPU_ALLOC`
+- `MEMORY`
+- `MEM_ALLOC`
+- `GPUS`
+- `GPU_ALLOC`
+- `RUNNING`
+- `PENDING`
+- `GRES_USED`
+
+`-o/--format` で使える field 名:
 
 - `Partition`
 - `Hostnames`, `Hostname`, `NodeList`
 - `State`
-- `GresUsed`
+- `Features`
+- `CPUS`
+- `CPU_ALLOC`, `CPUSLOAD`, `CPUALLOC`
+- `Memory`, `Mem`
+- `MEM_ALLOC`, `MemoryAllocated`, `MemAlloc`
+- `GPUS`
+- `GPU_ALLOC`, `GpusAllocated`, `GpuAlloc`
+- `Running`, `RunningJobs`
+- `Pending`, `PendingJobs`
+- `GRES_USED`, `GresUsed`
 
-Supported `%` tokens for `-o/--format`:
+`%` 形式で使える code:
 
 - `%P`
 - `%N`
 - `%t`, `%T`
+- `%f`
 - `%G`
 
-## Step And Allocation Semantics
+## step と allocation の意味
 
-`slotd` distinguishes:
+`slotd` は次を区別します。
 
-- top-level jobs
-- allocation-only jobs
-- steps recorded under an allocation
+- top-level job
+- allocation-only job
+- allocation 配下の step
 
-Important current behavior:
+現在の挙動:
 
-- `salloc` creates an allocation-only top-level job
-- foreground `srun` outside an allocation creates an allocation-like top-level job and a step record
-- `srun` inside an existing allocation creates only a step record
-- `sacct` includes steps
-- `squeue` excludes steps
-- `scontrol show job <allocation_id>` includes a step summary
-- `scancel <job.step>` resolves the step record and cancels that child record
+- `salloc` は allocation-only な top-level job を作る
+- allocation 外の foreground `srun` は allocation-like top-level job と step を作る
+- allocation 内 `srun` は step のみ作る
+- `sacct` には step が出る
+- `squeue` には step が出ない
+- `scontrol show job <allocation_id>` には step summary が出る
+- `scancel <job.step>` は step record を解決してその子レコードを対象にする
 
-## Runtime Enforcement And OOM Handling
+## runtime enforcement と OOM
 
-When `SLOTD_CGROUP_BASE` is set:
+`SLOTD_CGROUP_BASE` 設定時:
 
-- daemon-launched jobs create a per-job cgroup
-- foreground allocations and steps create a per-job cgroup
-- `memory.max` is written from requested memory
-- `cpu.max` is written from requested CPU share
-- the child pid is written to `cgroup.procs`
+- daemon launch job で job ごとの cgroup を作る
+- foreground allocation / step でも cgroup を作る
+- `memory.max` に requested memory を書く
+- `cpu.max` に requested CPU 相当を書き込む
+- child pid を `cgroup.procs` に書く
 
-OOM handling:
+OOM:
 
-- if cgroup memory events indicate OOM, final state becomes `OUT_OF_MEMORY`
-- otherwise signal-based termination becomes `FAILED`
+- cgroup memory events で OOM が見えたら `OUT_OF_MEMORY`
+- それ以外の signal 終了は基本的に `FAILED`
 
-If cgroups are not configured:
+cgroup 未設定時:
 
-- scheduling reservations still work
-- enforcement is best-effort only through scheduler admission and timeout handling
+- scheduler による予約制御は動く
+- runtime enforcement は best-effort
 
-## Recovery Behavior
+## recovery
 
-The daemon persists enough metadata to recover many running jobs after a restart.
+daemon restart 後に running job の回復を試みます。
 
-Implemented behavior:
+現在の挙動:
 
-- daemon-managed jobs write an `exit_status` file via a wrapper script
-- on recovery, adopted jobs are checked for live process groups
-- if the process group is gone, `slotd` tries to restore final state from `exit_status`
-- if cgroup memory events indicate OOM, recovery prefers `OUT_OF_MEMORY`
-- if no reliable terminal signal exists, recovery falls back to `FAILED` with reason `LostAfterRestart`
+- daemon-managed job は wrapper script で `exit_status` を保存する
+- recovery 時に process group の生存確認を行う
+- process group が消えていれば `exit_status` から最終状態を復元する
+- cgroup memory event があれば `OUT_OF_MEMORY` を優先する
+- 十分な情報が無ければ `FAILED` / `LostAfterRestart` に落とす
 
-## Current Slurm Compatibility Boundaries
+## 通知
 
-Implemented Slurm-like areas:
+`SLOTD_NOTIFY_CMD` が設定されている場合、terminal な top-level job 完了時に best-effort で shell command を spawn します。
 
-- familiar command names
-- common submission flags
-- `#SBATCH` parsing
-- dependencies
-- arrays
-- `salloc` and allocation-local `srun`
+渡される環境変数:
+
+- `SLOTD_JOB_ID`
+- `SLOTD_JOB_NAME`
+- `SLOTD_JOB_STATE`
+- `SLOTD_JOB_PARTITION`
+- `SLOTD_JOB_REASON`
+
+requeue により `PENDING` へ戻った中間失敗では通知しません。
+
+## Slurm 互換性の境界
+
+Slurm 風に実装されているもの:
+
+- command 名
+- 主な submission flag
+- `#SBATCH` 解析
+- dependency
+- array
+- `salloc` と allocation 内 `srun`
 - `scontrol show/hold/release/update job`
-- `sacct`, `squeue`, `sinfo` custom formatting
+- `sacct`, `squeue`, `sinfo` の custom formatting
 
-Notable current differences from full Slurm:
+full Slurm と異なる主な点:
 
 - single-node only
-- no real multi-node placement
-- no accounts or QoS
-- no `scontrol` support beyond `job`
-- `squeue -l`, `sinfo -l`, and `sinfo -N` are parsed but not feature-complete
-- `%` formatting support is a subset, not full Slurm coverage
-- no separate array umbrella record
-- `--pty` selects the foreground path but is not a full terminal management implementation
+- multi-node placement はない
+- account / QoS はない
+- `scontrol` は `job` に限定
+- `%` format の対応は部分集合
+- array umbrella parent record はない
+- `--pty` は完全な terminal 管理ではない
+- `sstat` 風機能と `sattach` 風機能は未実装
