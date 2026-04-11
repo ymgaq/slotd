@@ -57,6 +57,19 @@ pub enum Request {
     GetJob {
         job_id: i64,
     },
+    HoldJob {
+        job_id: i64,
+    },
+    ReleaseJob {
+        job_id: i64,
+    },
+    UpdateJob {
+        job_id: i64,
+        name: Option<String>,
+        partition: Option<String>,
+        time_limit_secs: Option<u64>,
+        priority: Option<i32>,
+    },
     Cancel {
         job_id: i64,
     },

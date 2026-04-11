@@ -94,14 +94,16 @@ impl Store {
         let user_name = request.user_name.clone();
         self.conn.execute(
             "INSERT INTO jobs (
-                parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                 requested_tasks, requested_gpus, allocation_only, dependency,
                 array_job_id, array_task_id, array_task_count, array_task_limit, submit_time,
                 state_reason, time_limit_secs
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
             params![
                 Option::<i64>::None,
                 Option::<i64>::None,
+                false,
+                0i32,
                 resolved_name,
                 user_name,
                 JobState::Pending.as_str(),
@@ -208,11 +210,11 @@ impl Store {
         let submit_time = now_ts();
         self.conn.execute(
             "INSERT INTO jobs (
-                parent_job_id, step_id, name, user_name, state, partition, command, cwd,
+                parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd,
                 requested_cpus, requested_memory_mb, requested_tasks, requested_gpus, allocation_only,
                 dependency, array_job_id, array_task_id, array_task_count, array_task_limit,
                 submit_time, start_time, state_reason, time_limit_secs, script_path, stdout_path, stderr_path
-            ) VALUES (?1, ?2, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '')",
+            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '')",
             params![
                 parent_job_id,
                 next_step_id as i64,
@@ -230,7 +232,7 @@ impl Store {
 
     pub fn list_steps(&self, parent_job_id: i64) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
@@ -256,7 +258,7 @@ impl Store {
         partitions: Option<&[String]>,
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
@@ -282,7 +284,7 @@ impl Store {
         end_time: Option<i64>,
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
@@ -299,7 +301,7 @@ impl Store {
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
@@ -316,7 +318,7 @@ impl Store {
     pub fn get_job(&self, job_id: i64) -> Result<Option<JobRecord>> {
         self.conn
             .query_row(
-                "SELECT id, parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                         requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                         array_task_id, array_task_count, array_task_limit, max_rss_kb,
                         submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
@@ -332,7 +334,7 @@ impl Store {
 
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
@@ -432,6 +434,55 @@ impl Store {
              WHERE id = ?2",
             params![max_rss_kb as i64, job_id],
         )?;
+        Ok(())
+    }
+
+    pub fn hold_job(&self, job_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET held = 1, state_reason = 'JobHeldUser' WHERE id = ?1 AND state = 'PENDING'",
+            [job_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn release_job(&self, job_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs SET held = 0, state_reason = 'Priority' WHERE id = ?1 AND state = 'PENDING'",
+            [job_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_job_fields(
+        &self,
+        job_id: i64,
+        name: Option<&str>,
+        partition: Option<&str>,
+        time_limit_secs: Option<u64>,
+        priority: Option<i32>,
+    ) -> Result<()> {
+        if let Some(value) = name {
+            self.conn
+                .execute("UPDATE jobs SET name = ?1 WHERE id = ?2", params![value, job_id])?;
+        }
+        if let Some(value) = partition {
+            self.conn.execute(
+                "UPDATE jobs SET partition = ?1 WHERE id = ?2 AND state = 'PENDING'",
+                params![value, job_id],
+            )?;
+        }
+        if let Some(value) = time_limit_secs {
+            self.conn.execute(
+                "UPDATE jobs SET time_limit_secs = ?1 WHERE id = ?2",
+                params![value as i64, job_id],
+            )?;
+        }
+        if let Some(value) = priority {
+            self.conn.execute(
+                "UPDATE jobs SET priority = ?1 WHERE id = ?2",
+                params![value, job_id],
+            )?;
+        }
         Ok(())
     }
 
@@ -541,6 +592,18 @@ impl Store {
             "jobs",
             "step_id",
             "ALTER TABLE jobs ADD COLUMN step_id INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "held",
+            "ALTER TABLE jobs ADD COLUMN held INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "priority",
+            "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(
             &self.conn,
@@ -724,10 +787,10 @@ impl Store {
 }
 
 fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
-    let state_text: String = row.get(5)?;
+    let state_text: String = row.get(7)?;
     let state = state_text.parse().map_err(|message: String| {
         rusqlite::Error::FromSqlConversionFailure(
-            5,
+            7,
             rusqlite::types::Type::Text,
             Box::new(SlotdError::from(message)),
         )
@@ -736,45 +799,47 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         id: row.get(0)?,
         parent_job_id: row.get(1)?,
         step_id: row.get::<_, Option<i64>>(2)?.map(|value| value as u32),
-        name: row.get(3)?,
-        user_name: row.get(4)?,
+        held: row.get::<_, bool>(3)?,
+        priority: row.get(4)?,
+        name: row.get(5)?,
+        user_name: row.get(6)?,
         state,
-        partition: row.get(6)?,
-        command: row.get(7)?,
-        cwd: row.get(8)?,
-        requested_cpus: row.get(9)?,
-        requested_memory_mb: row.get(10)?,
-        requested_tasks: row.get(11)?,
-        requested_gpus: row.get(12)?,
-        allocation_only: row.get::<_, bool>(13)?,
-        dependency: row.get(14)?,
-        array_job_id: row.get(15)?,
-        array_task_id: row.get(16)?,
-        array_task_count: row.get::<_, Option<i64>>(17)?.map(|value| value as u32),
-        array_task_limit: row.get::<_, Option<i64>>(18)?.map(|value| value as u32),
-        max_rss_kb: row.get::<_, Option<i64>>(19)?.map(|value| value as u64),
-        submit_time: row.get(20)?,
-        start_time: row.get(21)?,
-        end_time: row.get(22)?,
-        pid: row.get(23)?,
-        pgid: row.get(24)?,
-        exit_code: row.get(25)?,
+        partition: row.get(8)?,
+        command: row.get(9)?,
+        cwd: row.get(10)?,
+        requested_cpus: row.get(11)?,
+        requested_memory_mb: row.get(12)?,
+        requested_tasks: row.get(13)?,
+        requested_gpus: row.get(14)?,
+        allocation_only: row.get::<_, bool>(15)?,
+        dependency: row.get(16)?,
+        array_job_id: row.get(17)?,
+        array_task_id: row.get(18)?,
+        array_task_count: row.get::<_, Option<i64>>(19)?.map(|value| value as u32),
+        array_task_limit: row.get::<_, Option<i64>>(20)?.map(|value| value as u32),
+        max_rss_kb: row.get::<_, Option<i64>>(21)?.map(|value| value as u64),
+        submit_time: row.get(22)?,
+        start_time: row.get(23)?,
+        end_time: row.get(24)?,
+        pid: row.get(25)?,
+        pgid: row.get(26)?,
+        exit_code: row.get(27)?,
         state_reason: row
-            .get::<_, String>(26)
+            .get::<_, String>(28)
             .ok()
             .filter(|value| !value.is_empty()),
-        term_signal: row.get(27)?,
-        time_limit_secs: row.get::<_, Option<i64>>(28)?.map(|value| value as u64),
-        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(29)?).map_err(|error| {
+        term_signal: row.get(29)?,
+        time_limit_secs: row.get::<_, Option<i64>>(30)?.map(|value| value as u64),
+        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(31)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                29,
+                31,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        script_path: row.get(30)?,
-        stdout_path: row.get(31)?,
-        stderr_path: row.get(32)?,
+        script_path: row.get(32)?,
+        stdout_path: row.get(33)?,
+        stderr_path: row.get(34)?,
     })
 }
 

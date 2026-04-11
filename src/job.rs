@@ -71,6 +71,8 @@ pub struct JobRecord {
     pub id: i64,
     pub parent_job_id: Option<i64>,
     pub step_id: Option<u32>,
+    pub held: bool,
+    pub priority: i32,
     pub name: String,
     pub user_name: String,
     pub state: JobState,

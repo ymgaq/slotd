@@ -141,6 +141,32 @@ fn handle_stream(
         Request::GetJob { job_id } => Response::Job {
             job: store.get_job(job_id)?,
         },
+        Request::HoldJob { job_id } => {
+            store.hold_job(job_id)?;
+            Response::Submitted { job_id }
+        }
+        Request::ReleaseJob { job_id } => {
+            store.release_job(job_id)?;
+            schedule_pending_jobs(store, runner)?;
+            Response::Submitted { job_id }
+        }
+        Request::UpdateJob {
+            job_id,
+            name,
+            partition,
+            time_limit_secs,
+            priority,
+        } => {
+            store.update_job_fields(
+                job_id,
+                name.as_deref(),
+                partition.as_deref(),
+                time_limit_secs,
+                priority,
+            )?;
+            schedule_pending_jobs(store, runner)?;
+            Response::Submitted { job_id }
+        }
         Request::Cancel { job_id } => {
             if runner.cancel(config, store, job_id)? {
                 Response::Cancelled { job_id }
@@ -272,6 +298,9 @@ fn resources_fit(
 }
 
 fn pending_block_reason<'a>(store: &'a Store, job: &'a JobRecord) -> Result<Option<&'static str>> {
+    if job.held {
+        return Ok(Some("JobHeldUser"));
+    }
     if !dependency_satisfied(store, job)? {
         return Ok(Some("Dependency"));
     }
