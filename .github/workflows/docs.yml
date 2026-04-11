@@ -1,0 +1,59 @@
+name: docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mdBook
+        run: cargo install mdbook
+
+      - name: Build English docs
+        working-directory: docs/docs-site
+        run: mdbook build
+
+      - name: Build Japanese docs
+        working-directory: docs/docs-site-ja
+        run: mdbook build
+
+      - name: Build Chinese docs
+        working-directory: docs/docs-site-cn
+        run: mdbook build
+
+      - name: Assemble Pages artifact
+        run: |
+          mkdir -p public/ja public/cn
+          cp -r docs/docs-site/book/* public/
+          cp -r docs/docs-site-ja/book/* public/ja/
+          cp -r docs/docs-site-cn/book/* public/cn/
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
