@@ -195,6 +195,15 @@ fn dispatch_request(
                 }
             }
         }
+        Request::SignalJob { job_id, signal } => {
+            if runner.signal_job(job_id, signal)? {
+                Response::Submitted { job_id }
+            } else {
+                Response::Error {
+                    message: format!("job {job_id} is not currently running"),
+                }
+            }
+        }
         Request::NodeInfo => Response::NodeInfo {
             info: store.node_info()?,
         },

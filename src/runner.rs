@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
+use std::fs::OpenOptions;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -12,7 +13,7 @@ use nix::unistd::{Pid, setsid};
 
 use crate::config::AppConfig;
 use crate::error::Result;
-use crate::job::{JobRecord, JobState};
+use crate::job::{JobRecord, JobState, OpenMode};
 use crate::store::Store;
 
 pub struct RunningJob {
@@ -20,6 +21,7 @@ pub struct RunningJob {
     pub pid: i32,
     pub cgroup_path: Option<PathBuf>,
     pub status_path: Option<PathBuf>,
+    pub warning_signal_sent: bool,
     handle: JobHandle,
 }
 
@@ -40,11 +42,11 @@ impl Runner {
     }
 
     pub fn launch(&mut self, store: &Store, job: &JobRecord) -> Result<()> {
-        let stdout = File::create(&job.stdout_path)?;
+        let stdout = open_output_file(&job.stdout_path, job.open_mode)?;
         let stderr = if job.stderr_path == job.stdout_path {
             stdout.try_clone()?
         } else {
-            File::create(&job.stderr_path)?
+            open_output_file(&job.stderr_path, job.open_mode)?
         };
         let assigned_gpu_ids = if store.config().is_gpu_partition(&job.partition) {
             store.allocate_gpu_ids(job.requested_gpus)?
@@ -79,6 +81,7 @@ impl Runner {
         command.stdin(Stdio::null());
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
+        command.envs(job.export_env.iter().cloned());
         command.env("SLURM_JOB_ID", job.id.to_string());
         command.env("SLURM_JOB_NAME", &job.name);
         command.env("SLURM_JOB_PARTITION", &job.partition);
@@ -116,6 +119,7 @@ impl Runner {
                 pid,
                 cgroup_path,
                 status_path: Some(status_path),
+                warning_signal_sent: false,
                 handle: JobHandle::Child(child),
             },
         );
@@ -135,6 +139,7 @@ impl Runner {
                 pid: job.pid.unwrap_or_default(),
                 cgroup_path: job_cgroup_path(config, job.id),
                 status_path: job_status_path(job),
+                warning_signal_sent: false,
                 handle: JobHandle::Adopted,
             },
         );
@@ -214,6 +219,34 @@ impl Runner {
             self.terminate_job(config, store, job_id, JobState::Timeout, "TimeLimit")?;
         }
 
+        let jobs_to_warn = self
+            .jobs
+            .iter()
+            .filter_map(|(&job_id, running)| (!running.warning_signal_sent).then_some(job_id))
+            .collect::<Vec<_>>();
+        for job_id in jobs_to_warn {
+            let Some(job) = store.get_job(job_id)? else {
+                continue;
+            };
+            let Some(start) = job.start_time else {
+                continue;
+            };
+            let Some(limit) = job.time_limit_secs else {
+                continue;
+            };
+            let Some(warning_signal) = &job.warning_signal else {
+                continue;
+            };
+            let deadline = start.saturating_add(limit as i64);
+            let warn_at = deadline.saturating_sub(warning_signal.seconds_before_end as i64);
+            if now >= warn_at && now < deadline {
+                self.signal_job(job_id, warning_signal.signal)?;
+                if let Some(running) = self.jobs.get_mut(&job_id) {
+                    running.warning_signal_sent = true;
+                }
+            }
+        }
+
         Ok(())
     }
 
@@ -233,6 +266,16 @@ impl Runner {
             JobState::Cancelled,
             "CancelledByUser",
         )?;
+        Ok(true)
+    }
+
+    pub fn signal_job(&self, job_id: i64, signal: i32) -> Result<bool> {
+        let Some(running) = self.jobs.get(&job_id) else {
+            return Ok(false);
+        };
+        let signal = Signal::try_from(signal)
+            .map_err(|_| crate::error::SlotdError::from(format!("unsupported signal: {signal}")))?;
+        let _ = killpg(Pid::from_raw(running.pgid), signal);
         Ok(true)
     }
 }
@@ -362,6 +405,20 @@ pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {
 
 fn join_gpu_ids(ids: &[u32]) -> String {
     ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn open_output_file(path: &str, open_mode: OpenMode) -> Result<File> {
+    let mut options = OpenOptions::new();
+    options.create(true).write(true);
+    match open_mode {
+        OpenMode::Append => {
+            options.append(true);
+        }
+        OpenMode::Truncate => {
+            options.truncate(true);
+        }
+    }
+    Ok(options.open(path)?)
 }
 
 fn job_status_path(job: &JobRecord) -> Option<PathBuf> {

@@ -70,6 +70,10 @@ pub enum Request {
         time_limit_secs: Option<u64>,
         priority: Option<i32>,
     },
+    SignalJob {
+        job_id: i64,
+        signal: i32,
+    },
     Cancel {
         job_id: i64,
     },

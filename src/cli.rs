@@ -12,10 +12,11 @@ use crate::config::AppConfig;
 use crate::daemon;
 use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
-use crate::job::{JobRecord, JobState, SubmitRequest};
+use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest, WarningSignal};
 use crate::output::{
     parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
     print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs,
+    print_squeue_jobs_with_start_times,
 };
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
 
@@ -159,6 +160,14 @@ pub struct SbatchArgs {
     output: Option<PathBuf>,
     #[arg(long, short = 'e')]
     error: Option<PathBuf>,
+    #[arg(long)]
+    export: Option<String>,
+    #[arg(long = "export-file")]
+    export_file: Option<PathBuf>,
+    #[arg(long = "open-mode")]
+    open_mode: Option<String>,
+    #[arg(long)]
+    signal: Option<String>,
     #[arg(long, short = 'd')]
     dependency: Option<String>,
     #[arg(long, short = 'a')]
@@ -180,6 +189,8 @@ pub struct ScontrolArgs {
 
 #[derive(Debug, Args)]
 pub struct ScancelArgs {
+    #[arg(long, short = 's')]
+    signal: Option<String>,
     job_id: String,
 }
 
@@ -201,6 +212,8 @@ pub struct SqueueArgs {
     sort: Option<String>,
     #[arg(short = 'l', long = "long")]
     long: bool,
+    #[arg(long)]
+    start: bool,
     #[arg(long = "noheader")]
     noheader: bool,
 }
@@ -338,6 +351,18 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         (script_name, script_body, directives, None)
     };
     let resolved = args.resources.resolve(&config, Some(&directives))?;
+    let export_env = resolve_export_env(args.export.as_deref(), args.export_file.as_deref())?;
+    let open_mode = args
+        .open_mode
+        .as_deref()
+        .unwrap_or("truncate")
+        .parse::<OpenMode>()
+        .map_err(SlotdError::from)?;
+    let warning_signal = args
+        .signal
+        .as_deref()
+        .map(parse_warning_signal)
+        .transpose()?;
 
     let request = SubmitRequest {
         name: resolved.job_name,
@@ -363,6 +388,9 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
             .error
             .map(|path| path.to_string_lossy().to_string())
             .or(directives.error_path),
+        export_env,
+        open_mode,
+        warning_signal,
     };
 
     match send_request(&config, &Request::SubmitBatch(request))? {
@@ -442,6 +470,9 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
             .error
             .clone()
             .map(|path| path.to_string_lossy().to_string()),
+        export_env: Vec::new(),
+        open_mode: OpenMode::Truncate,
+        warning_signal: None,
     };
 
     let job_id = match send_request(
@@ -504,6 +535,9 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         time_limit_secs: resolved.time_limit_secs,
         stdout_path: None,
         stderr_path: None,
+        export_env: Vec::new(),
+        open_mode: OpenMode::Truncate,
+        warning_signal: None,
     };
 
     let job_id = match send_request(
@@ -528,8 +562,19 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
 }
 
 fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
-    let fields =
-        parse_squeue_fields(args.format.as_deref(), args.long).map_err(SlotdError::from)?;
+    let fields = if args.start && args.format.is_none() {
+        vec![
+            crate::output::SqueueField::JobId,
+            crate::output::SqueueField::Partition,
+            crate::output::SqueueField::Name,
+            crate::output::SqueueField::User,
+            crate::output::SqueueField::StateCompact,
+            crate::output::SqueueField::StartTime,
+            crate::output::SqueueField::NodeListReason,
+        ]
+    } else {
+        parse_squeue_fields(args.format.as_deref(), args.long).map_err(SlotdError::from)?
+    };
     let state_filter = if let Some(values) = args.states {
         Some(parse_states(values)?)
     } else if args.all {
@@ -549,7 +594,18 @@ fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
     )? {
         Response::Jobs { jobs } => {
             let jobs = sort_squeue_jobs(jobs, args.sort.as_deref());
-            print_squeue_jobs(&config, &jobs, &fields, args.noheader);
+            if args.start {
+                let start_times = estimate_start_times(&config, &jobs);
+                print_squeue_jobs_with_start_times(
+                    &config,
+                    &jobs,
+                    &fields,
+                    &start_times,
+                    args.noheader,
+                );
+            } else {
+                print_squeue_jobs(&config, &jobs, &fields, args.noheader);
+            }
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -721,6 +777,20 @@ fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
 
 fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
     let job_id = resolve_job_reference(&config, &args.job_id)?;
+    if let Some(signal) = args.signal.as_deref() {
+        let signal = parse_signal_name(signal)?;
+        return match send_request(&config, &Request::SignalJob { job_id, signal })? {
+            Response::Submitted { job_id } => {
+                println!("Signaled job {job_id}");
+                Ok(())
+            }
+            Response::Error { message } => Err(SlotdError::from(message)),
+            other => Err(SlotdError::from(format!(
+                "unexpected response to scancel signal: {other:?}"
+            ))),
+        };
+    }
+
     match send_request(&config, &Request::Cancel { job_id })? {
         Response::Cancelled { job_id } => {
             println!("Cancelled job {job_id}");
@@ -1034,6 +1104,9 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         time_limit_secs: spec.time_limit_secs,
         stdout_path: None,
         stderr_path: None,
+        export_env: Vec::new(),
+        open_mode: OpenMode::Truncate,
+        warning_signal: None,
     };
 
     let job_id = match send_request(
@@ -1388,6 +1461,190 @@ fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
         .collect()
 }
 
+fn resolve_export_env(export: Option<&str>, export_file: Option<&Path>) -> Result<Vec<(String, String)>> {
+    let mut env = Vec::<(String, String)>::new();
+    if let Some(path) = export_file {
+        let contents = fs::read_to_string(path)?;
+        env.extend(parse_export_file_contents(&contents)?);
+    }
+    if let Some(spec) = export {
+        env = resolve_export_spec(spec, &env)?;
+    }
+    env.sort_by(|a, b| a.0.cmp(&b.0));
+    env.dedup_by(|a, b| a.0 == b.0);
+    Ok(env)
+}
+
+fn parse_export_file_contents(contents: &str) -> Result<Vec<(String, String)>> {
+    let mut env = Vec::new();
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else {
+            return Err(SlotdError::from(format!("invalid export-file entry: {line}")));
+        };
+        validate_env_name(key)?;
+        env.push((key.to_string(), value.to_string()));
+    }
+    Ok(env)
+}
+
+fn resolve_export_spec(spec: &str, seed: &[(String, String)]) -> Result<Vec<(String, String)>> {
+    let trimmed = spec.trim();
+    if trimmed.eq_ignore_ascii_case("none") {
+        return Ok(Vec::new());
+    }
+
+    let mut env = if trimmed.eq_ignore_ascii_case("all") || trimmed.starts_with("ALL,") {
+        std::env::vars().collect::<Vec<_>>()
+    } else {
+        seed.to_vec()
+    };
+    let entries = trimmed
+        .split(',')
+        .map(str::trim)
+        .filter(|entry| !entry.is_empty())
+        .collect::<Vec<_>>();
+
+    for entry in entries {
+        if entry.eq_ignore_ascii_case("all") {
+            continue;
+        }
+        if entry.eq_ignore_ascii_case("none") {
+            env.clear();
+            continue;
+        }
+        if let Some((key, value)) = entry.split_once('=') {
+            validate_env_name(key)?;
+            upsert_env_pair(&mut env, key, value);
+            continue;
+        }
+        validate_env_name(entry)?;
+        let value = std::env::var(entry).unwrap_or_default();
+        upsert_env_pair(&mut env, entry, &value);
+    }
+
+    Ok(env)
+}
+
+fn upsert_env_pair(env: &mut Vec<(String, String)>, key: &str, value: &str) {
+    if let Some(existing) = env.iter_mut().find(|(name, _)| name == key) {
+        existing.1 = value.to_string();
+    } else {
+        env.push((key.to_string(), value.to_string()));
+    }
+}
+
+fn validate_env_name(value: &str) -> Result<()> {
+    if value.is_empty()
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
+        || value.chars().next().is_some_and(|ch| ch.is_ascii_digit())
+    {
+        return Err(SlotdError::from(format!("invalid environment variable name: {value}")));
+    }
+    Ok(())
+}
+
+fn parse_warning_signal(value: &str) -> Result<WarningSignal> {
+    let trimmed = value.trim();
+    let trimmed = trimmed.strip_prefix("B:").unwrap_or(trimmed);
+    let (signal_name, seconds_before_end) = match trimmed.split_once('@') {
+        Some((signal_name, seconds_before_end)) => (
+            signal_name,
+            seconds_before_end
+                .parse::<u64>()
+                .map_err(|_| SlotdError::from(format!("invalid signal offset: {trimmed}")))?,
+        ),
+        None => (trimmed, 60),
+    };
+    Ok(WarningSignal {
+        signal: parse_signal_name(signal_name)?,
+        seconds_before_end,
+    })
+}
+
+fn parse_signal_name(value: &str) -> Result<i32> {
+    let normalized = value.trim().trim_start_matches("SIG").to_ascii_uppercase();
+    let signal = match normalized.as_str() {
+        "TERM" => nix::sys::signal::Signal::SIGTERM,
+        "KILL" => nix::sys::signal::Signal::SIGKILL,
+        "INT" => nix::sys::signal::Signal::SIGINT,
+        "HUP" => nix::sys::signal::Signal::SIGHUP,
+        "QUIT" => nix::sys::signal::Signal::SIGQUIT,
+        "USR1" => nix::sys::signal::Signal::SIGUSR1,
+        "USR2" => nix::sys::signal::Signal::SIGUSR2,
+        "CONT" => nix::sys::signal::Signal::SIGCONT,
+        "STOP" => nix::sys::signal::Signal::SIGSTOP,
+        "TSTP" => nix::sys::signal::Signal::SIGTSTP,
+        "ALRM" => nix::sys::signal::Signal::SIGALRM,
+        other => {
+            if let Ok(number) = other.parse::<i32>() {
+                return Ok(number);
+            }
+            return Err(SlotdError::from(format!("unsupported signal: {value}")));
+        }
+    };
+    Ok(signal as i32)
+}
+
+fn estimate_start_times(config: &AppConfig, jobs: &[JobRecord]) -> std::collections::HashMap<i64, String> {
+    let mut result = std::collections::HashMap::new();
+    let now = now_ts();
+    let running_jobs = jobs
+        .iter()
+        .filter(|job| job.state == JobState::Running && job.parent_job_id.is_none())
+        .collect::<Vec<_>>();
+    let used_cpus = running_jobs
+        .iter()
+        .map(|job| job.requested_cpus.saturating_mul(job.requested_tasks))
+        .sum::<u32>();
+    let used_memory_mb = running_jobs
+        .iter()
+        .map(|job| job.requested_memory_mb)
+        .sum::<u64>();
+    let used_gpus = running_jobs
+        .iter()
+        .map(|job| job.requested_gpus)
+        .sum::<u32>();
+    let running_release = running_jobs
+        .iter()
+        .filter_map(|job| Some(job.start_time?.saturating_add(job.time_limit_secs? as i64)))
+        .max();
+
+    for job in jobs {
+        let value = match job.state {
+            JobState::Running => job.start_time.map(format_timestamp),
+            JobState::Pending => {
+                let fits_now = job.requested_cpus.saturating_mul(job.requested_tasks)
+                    <= config.total_cpus.saturating_sub(used_cpus)
+                    && job.requested_memory_mb <= config.total_memory_mb.saturating_sub(used_memory_mb)
+                    && job.requested_gpus <= config.total_gpus.saturating_sub(used_gpus);
+                if fits_now {
+                    Some(format_timestamp(now))
+                } else {
+                    running_release.map(format_timestamp)
+                }
+            }
+            _ => None,
+        };
+        result.insert(job.id, value.unwrap_or_else(|| "N/A".to_string()));
+    }
+
+    result
+}
+
+fn now_ts() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 fn parse_state(value: &str) -> Result<JobState> {
     let normalized = value.trim().to_ascii_uppercase();
     match normalized.as_str() {
@@ -1715,9 +1972,10 @@ mod tests {
     use super::{
         CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
-        parse_time_filter,
+        parse_signal_name, parse_time_filter, parse_warning_signal, resolve_export_spec,
     };
     use crate::config::AppConfig;
+    use crate::job::{JobRecord, JobState, OpenMode};
     use crate::sbatch::BatchDirectives;
 
     #[test]
@@ -1848,5 +2106,106 @@ mod tests {
     fn formats_timestamp_and_duration() {
         assert_eq!(format_timestamp(97_445), "1970-01-02T03:04:05");
         assert_eq!(format_duration_secs(3_661), "01:01:01");
+    }
+
+    #[test]
+    fn phase2_export_spec_none_clears_seed_values() {
+        let resolved = resolve_export_spec(
+            "NONE",
+            &[("KEEP".to_string(), "value".to_string())],
+        )
+        .expect("resolve export");
+        assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn phase2_export_spec_updates_seed_and_adds_assignments() {
+        let resolved = resolve_export_spec(
+            "FOO=updated,BAR=baz",
+            &[("FOO".to_string(), "old".to_string())],
+        )
+        .expect("resolve export");
+        assert_eq!(
+            resolved,
+            vec![
+                ("FOO".to_string(), "updated".to_string()),
+                ("BAR".to_string(), "baz".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn phase2_warning_signal_parses_batch_prefix_and_offset() {
+        let warning = parse_warning_signal("B:USR1@90").expect("warning signal");
+        assert_eq!(warning.signal, parse_signal_name("USR1").expect("signal"));
+        assert_eq!(warning.seconds_before_end, 90);
+    }
+
+    #[test]
+    fn phase2_warning_signal_defaults_offset_to_sixty_seconds() {
+        let warning = parse_warning_signal("TERM").expect("warning signal");
+        assert_eq!(warning.signal, parse_signal_name("TERM").expect("signal"));
+        assert_eq!(warning.seconds_before_end, 60);
+    }
+
+    #[test]
+    fn phase2_signal_parser_accepts_signal_names_and_numbers() {
+        assert_eq!(
+            parse_signal_name("SIGTERM").expect("named signal"),
+            parse_signal_name("TERM").expect("canonical signal")
+        );
+        assert_eq!(parse_signal_name("15").expect("numeric signal"), 15);
+    }
+
+    #[test]
+    fn phase2_start_time_estimator_marks_jobs_that_fit_now() {
+        let mut config = AppConfig::load();
+        config.total_cpus = 8;
+        config.total_memory_mb = 16_384;
+        config.total_gpus = 1;
+        let jobs = vec![JobRecord {
+            id: 42,
+            parent_job_id: None,
+            step_id: None,
+            held: false,
+            priority: 0,
+            array_job_id: None,
+            array_task_id: None,
+            array_task_count: None,
+            array_task_limit: None,
+            user_name: "user".to_string(),
+            partition: config.default_partition().to_string(),
+            name: "pending".to_string(),
+            state: JobState::Pending,
+            command: "sleep 1".to_string(),
+            exit_code: None,
+            allocation_only: false,
+            dependency: None,
+            max_rss_kb: None,
+            submit_time: 0,
+            start_time: None,
+            end_time: None,
+            pid: None,
+            pgid: None,
+            requested_cpus: 2,
+            requested_tasks: 1,
+            requested_memory_mb: 512,
+            requested_gpus: 0,
+            assigned_gpu_ids: Vec::new(),
+            cwd: "/tmp".to_string(),
+            script_path: String::new(),
+            stdout_path: "slurm-42.out".to_string(),
+            stderr_path: "slurm-42.out".to_string(),
+            state_reason: None,
+            term_signal: None,
+            time_limit_secs: Some(300),
+            export_env: Vec::new(),
+            open_mode: OpenMode::Truncate,
+            warning_signal: None,
+        }];
+
+        let start_times = super::estimate_start_times(&config, &jobs);
+        let start = start_times.get(&42).expect("start time");
+        assert_ne!(start, "N/A");
     }
 }

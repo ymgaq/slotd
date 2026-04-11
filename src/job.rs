@@ -1,6 +1,39 @@
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub enum OpenMode {
+    Append,
+    Truncate,
+}
+
+impl OpenMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Append => "append",
+            Self::Truncate => "truncate",
+        }
+    }
+}
+
+impl std::str::FromStr for OpenMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value.to_ascii_lowercase().as_str() {
+            "append" => Ok(Self::Append),
+            "truncate" => Ok(Self::Truncate),
+            other => Err(format!("unsupported open mode: {other}")),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WarningSignal {
+    pub signal: i32,
+    pub seconds_before_end: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum JobState {
     Pending,
@@ -103,6 +136,9 @@ pub struct JobRecord {
     pub script_path: String,
     pub stdout_path: String,
     pub stderr_path: String,
+    pub export_env: Vec<(String, String)>,
+    pub open_mode: OpenMode,
+    pub warning_signal: Option<WarningSignal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,6 +160,9 @@ pub struct SubmitRequest {
     pub time_limit_secs: Option<u64>,
     pub stdout_path: Option<String>,
     pub stderr_path: Option<String>,
+    pub export_env: Vec<(String, String)>,
+    pub open_mode: OpenMode,
+    pub warning_signal: Option<WarningSignal>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

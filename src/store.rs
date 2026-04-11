@@ -5,7 +5,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::AppConfig;
 use crate::error::{Result, SlotdError};
-use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
+use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest, WarningSignal};
 use crate::sbatch::{
     default_batch_output_pattern, expand_output_pattern, parse_array_spec, resolve_log_path,
 };
@@ -97,8 +97,8 @@ impl Store {
                 parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                 requested_tasks, requested_gpus, allocation_only, dependency,
                 array_job_id, array_task_id, array_task_count, array_task_limit, submit_time,
-                state_reason, time_limit_secs
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
+                state_reason, time_limit_secs, export_env, open_mode, warning_signal, warning_signal_seconds
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)",
             params![
                 Option::<i64>::None,
                 Option::<i64>::None,
@@ -126,6 +126,13 @@ impl Store {
                 submit_time,
                 "Priority",
                 request.time_limit_secs.map(|value| value as i64),
+                serde_json::to_string(&request.export_env)?,
+                request.open_mode.as_str(),
+                request.warning_signal.as_ref().map(|value| value.signal),
+                request
+                    .warning_signal
+                    .as_ref()
+                    .map(|value| value.seconds_before_end as i64),
             ],
         )?;
 
@@ -213,8 +220,9 @@ impl Store {
                 parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd,
                 requested_cpus, requested_memory_mb, requested_tasks, requested_gpus, allocation_only,
                 dependency, array_job_id, array_task_id, array_task_count, array_task_limit,
-                submit_time, start_time, state_reason, time_limit_secs, script_path, stdout_path, stderr_path
-            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '')",
+                submit_time, start_time, state_reason, time_limit_secs, script_path, stdout_path, stderr_path,
+                export_env, open_mode, warning_signal, warning_signal_seconds
+            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, '', '', '', '', 'truncate', NULL, NULL)",
             params![
                 parent_job_id,
                 next_step_id as i64,
@@ -236,7 +244,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
              FROM jobs
              WHERE parent_job_id = ?1
              ORDER BY step_id ASC, id ASC",
@@ -262,7 +270,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
              FROM jobs
              WHERE parent_job_id IS NULL"
         )?;
@@ -288,7 +296,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
              FROM jobs"
         )?;
         let rows = stmt.query_map([], map_job)?;
@@ -305,7 +313,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
              FROM jobs
              WHERE state = 'RUNNING'
              ORDER BY id ASC",
@@ -322,7 +330,7 @@ impl Store {
                         requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                         array_task_id, array_task_count, array_task_limit, max_rss_kb,
                         submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                        assigned_gpus, script_path, stdout_path, stderr_path
+                        assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
                  FROM jobs
                  WHERE id = ?1",
                 [job_id],
@@ -338,7 +346,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
-                    assigned_gpus, script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds
              FROM jobs
              WHERE state = 'PENDING' AND parent_job_id IS NULL
              ORDER BY id ASC
@@ -713,6 +721,30 @@ impl Store {
             "max_rss_kb",
             "ALTER TABLE jobs ADD COLUMN max_rss_kb INTEGER",
         )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "export_env",
+            "ALTER TABLE jobs ADD COLUMN export_env TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "open_mode",
+            "ALTER TABLE jobs ADD COLUMN open_mode TEXT NOT NULL DEFAULT 'truncate'",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "warning_signal",
+            "ALTER TABLE jobs ADD COLUMN warning_signal INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "warning_signal_seconds",
+            "ALTER TABLE jobs ADD COLUMN warning_signal_seconds INTEGER",
+        )?;
         Ok(())
     }
 
@@ -858,6 +890,30 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         script_path: row.get(32)?,
         stdout_path: row.get(33)?,
         stderr_path: row.get(34)?,
+        export_env: parse_export_env_json(&row.get::<_, String>(35)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                35,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        open_mode: row
+            .get::<_, String>(36)?
+            .parse()
+            .map_err(|message: String| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    36,
+                    rusqlite::types::Type::Text,
+                    Box::new(SlotdError::from(message)),
+                )
+            })?,
+        warning_signal: match (row.get::<_, Option<i32>>(37)?, row.get::<_, Option<i64>>(38)?) {
+            (Some(signal), Some(seconds_before_end)) => Some(WarningSignal {
+                signal,
+                seconds_before_end: seconds_before_end as u64,
+            }),
+            _ => None,
+        },
     })
 }
 
@@ -875,6 +931,13 @@ fn default_name(script_name: &str) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("batch-job")
         .to_string()
+}
+
+fn parse_export_env_json(value: &str) -> Result<Vec<(String, String)>> {
+    if value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+    serde_json::from_str(value).map_err(Into::into)
 }
 
 fn default_output_pattern(array_task_id: Option<i32>) -> &'static str {
@@ -949,7 +1012,7 @@ fn effective_priority(job: &JobRecord, now: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::{effective_priority, order_pending_jobs};
-    use crate::job::{JobRecord, JobState};
+    use crate::job::{JobRecord, JobState, OpenMode};
 
     fn pending_job(id: i64, array_job_id: Option<i64>, priority: i32, submit_time: i64) -> JobRecord {
         JobRecord {
@@ -988,6 +1051,9 @@ mod tests {
             script_path: String::new(),
             stdout_path: String::new(),
             stderr_path: String::new(),
+            export_env: Vec::new(),
+            open_mode: OpenMode::Truncate,
+            warning_signal: None,
         }
     }
 

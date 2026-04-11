@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
@@ -111,6 +112,7 @@ pub enum SqueueField {
     ReqCpus,
     ReqMem,
     ReqGpus,
+    StartTime,
     NodeListReason,
 }
 
@@ -128,6 +130,7 @@ impl SqueueField {
             Self::ReqCpus => "CPUS",
             Self::ReqMem => "REQ_MEM",
             Self::ReqGpus => "REQ_GPU",
+            Self::StartTime => "START_TIME",
             Self::NodeListReason => "NODELIST(REASON)",
         }
     }
@@ -145,6 +148,7 @@ impl SqueueField {
             Self::ReqCpus => 6,
             Self::ReqMem => 8,
             Self::ReqGpus => 7,
+            Self::StartTime => 19,
             Self::NodeListReason => 16,
         }
     }
@@ -159,6 +163,7 @@ impl SqueueField {
                 | Self::ReqCpus
                 | Self::ReqMem
                 | Self::ReqGpus
+                | Self::StartTime
         )
     }
 
@@ -178,9 +183,36 @@ impl SqueueField {
             Self::ReqCpus => job.requested_cpus.to_string(),
             Self::ReqMem => format!("{}M", job.requested_memory_mb),
             Self::ReqGpus => job.requested_gpus.to_string(),
+            Self::StartTime => String::new(),
             Self::NodeListReason => squeue_nodelist_reason(config, job),
         }
     }
+}
+
+pub fn print_squeue_jobs_with_start_times(
+    config: &AppConfig,
+    jobs: &[JobRecord],
+    fields: &[SqueueField],
+    start_times: &HashMap<i64, String>,
+    noheader: bool,
+) {
+    print_table(
+        fields.iter().map(|field| TableColumn {
+            header: field.header().to_string(),
+            width: field.width(),
+            right_align: field.right_align(),
+        }),
+        jobs.iter().map(|job| {
+            fields
+                .iter()
+                .map(|field| match field {
+                    SqueueField::StartTime => start_times.get(&job.id).cloned().unwrap_or_default(),
+                    _ => field.render(config, job),
+                })
+                .collect::<Vec<_>>()
+        }),
+        noheader,
+    );
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -453,6 +485,7 @@ pub fn parse_squeue_fields(
                 "cpus" | "reqcpus" => Ok(SqueueField::ReqCpus),
                 "reqmem" => Ok(SqueueField::ReqMem),
                 "reqgpu" | "reqgpus" => Ok(SqueueField::ReqGpus),
+                "start" | "starttime" => Ok(SqueueField::StartTime),
                 "nodelist(reason)" | "nodelistreason" | "reason" | "nodelist" => {
                     Ok(SqueueField::NodeListReason)
                 }
@@ -560,6 +593,7 @@ fn parse_percent_squeue_fields(spec: &str) -> std::result::Result<Vec<SqueueFiel
             'u' => Ok(SqueueField::User),
             't' | 'T' => Ok(SqueueField::StateCompact),
             'M' => Ok(SqueueField::Time),
+            'S' => Ok(SqueueField::StartTime),
             'R' | 'N' => Ok(SqueueField::NodeListReason),
             other => Err(format!("unsupported squeue format code: %{other}")),
         })
@@ -908,6 +942,19 @@ mod tests {
 
         let sinfo = parse_sinfo_fields(Some("%P %N %t %G"), false).expect("sinfo");
         assert_eq!(sinfo.len(), 4);
+    }
+
+    #[test]
+    fn parses_squeue_start_time_field() {
+        let fields = parse_squeue_fields(Some("%i %S %R"), false).expect("squeue");
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SqueueField::JobId,
+                SqueueField::StartTime,
+                SqueueField::NodeListReason
+            ]
+        ));
     }
 
     #[test]
