@@ -9,10 +9,10 @@ pub fn recover(store: &Store, runner: &mut Runner) -> Result<()> {
             if process_group_alive_for_recovery(pgid)? {
                 runner.adopt(&job);
             } else {
-                store.mark_finished(job.id, JobState::Failed, None)?;
+                store.mark_finished(job.id, JobState::Failed, None, None, Some("LostAfterRestart"))?;
             }
         } else {
-            store.mark_finished(job.id, JobState::Failed, None)?;
+            store.mark_finished(job.id, JobState::Failed, None, None, Some("LostAfterRestart"))?;
         }
     }
 

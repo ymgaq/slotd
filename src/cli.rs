@@ -15,7 +15,7 @@ use crate::output::{
     parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs, print_sinfo,
     print_squeue_jobs,
 };
-use crate::sbatch::{parse_directives, parse_mem_mb};
+use crate::sbatch::{parse_directives, parse_mem_mb, parse_time_limit_secs};
 
 #[derive(Debug, Parser)]
 #[command(name = "slotd")]
@@ -50,6 +50,8 @@ pub struct SbatchArgs {
     cpus_per_task: Option<u32>,
     #[arg(long)]
     mem: Option<String>,
+    #[arg(long, short = 't')]
+    time: Option<String>,
     #[arg(long, short = 'G')]
     gpus: Option<u32>,
     #[arg(long, short = 'o')]
@@ -115,6 +117,8 @@ pub struct SrunArgs {
     cpus_per_task: Option<u32>,
     #[arg(long)]
     mem: Option<String>,
+    #[arg(long, short = 't')]
+    time: Option<String>,
     #[arg(long, short = 'G')]
     gpus: Option<u32>,
     #[arg(long, short = 'o')]
@@ -229,6 +233,10 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         .gpus
         .or(directives.gpus)
         .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
+    let time_limit_secs = match &args.time {
+        Some(value) => Some(parse_time_limit_secs(value)?),
+        None => directives.time_limit_secs,
+    };
 
     let request = SubmitRequest {
         name: args.job_name.or(directives.job_name),
@@ -241,6 +249,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         requested_cpus,
         requested_memory_mb,
         requested_gpus,
+        time_limit_secs,
         stdout_path: args
             .output
             .map(|path| path.to_string_lossy().to_string())
@@ -292,6 +301,11 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
     let requested_gpus = args
         .gpus
         .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
+    let time_limit_secs = args
+        .time
+        .as_deref()
+        .map(parse_time_limit_secs)
+        .transpose()?;
     let command_override = shell_join(&args.command);
     let script_body = format!("#!/usr/bin/env bash\nexec {}\n", command_override);
 
@@ -306,6 +320,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         requested_cpus,
         requested_memory_mb,
         requested_gpus,
+        time_limit_secs,
         stdout_path: args.output.clone().map(|path| path.to_string_lossy().to_string()),
         stderr_path: args.error.clone().map(|path| path.to_string_lossy().to_string()),
     };
@@ -521,9 +536,12 @@ fn parse_state(value: &str) -> Result<JobState> {
     match normalized.as_str() {
         "PD" | "PENDING" => Ok(JobState::Pending),
         "R" | "RUNNING" => Ok(JobState::Running),
+        "CG" | "COMPLETING" => Ok(JobState::Completing),
         "CD" | "COMPLETED" => Ok(JobState::Completed),
         "F" | "FAILED" => Ok(JobState::Failed),
         "CA" | "CANCELLED" => Ok(JobState::Cancelled),
+        "TO" | "TIMEOUT" => Ok(JobState::Timeout),
+        "OOM" | "OUT_OF_MEMORY" => Ok(JobState::OutOfMemory),
         _ => Err(SlotdError::from(format!("unknown state: {value}"))),
     }
 }

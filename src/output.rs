@@ -116,6 +116,7 @@ pub enum SacctField {
     Partition,
     User,
     State,
+    Reason,
     ExitCode,
     Elapsed,
 }
@@ -128,6 +129,7 @@ impl SacctField {
             Self::Partition => "Partition",
             Self::User => "User",
             Self::State => "State",
+            Self::Reason => "Reason",
             Self::ExitCode => "ExitCode",
             Self::Elapsed => "Elapsed",
         }
@@ -140,6 +142,7 @@ impl SacctField {
             Self::Partition => job.partition.clone(),
             Self::User => job.user_name.clone(),
             Self::State => job.state.as_str().to_string(),
+            Self::Reason => job.state_reason.clone().unwrap_or_default(),
             Self::ExitCode => format_exit_code(job),
             Self::Elapsed => format_elapsed(job),
         }
@@ -152,6 +155,7 @@ impl SacctField {
             Self::Partition => 9,
             Self::User => 12,
             Self::State => 10,
+            Self::Reason => 16,
             Self::ExitCode => 8,
             Self::Elapsed => 11,
         }
@@ -256,6 +260,7 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
                 "partition" => Ok(SacctField::Partition),
                 "user" => Ok(SacctField::User),
                 "state" => Ok(SacctField::State),
+                "reason" => Ok(SacctField::Reason),
                 "exitcode" => Ok(SacctField::ExitCode),
                 "elapsed" => Ok(SacctField::Elapsed),
                 other => Err(format!("unsupported sacct field: {other}")),
@@ -375,17 +380,23 @@ fn format_duration(seconds: i64) -> String {
 
 fn squeue_nodelist_reason(config: &AppConfig, job: &JobRecord) -> String {
     match job.state {
-        JobState::Pending => "(Resources)".to_string(),
+        JobState::Pending => format_reason(job.state_reason.as_deref().unwrap_or("Resources")),
         JobState::Running => config.hostname.clone(),
-        JobState::Cancelled => "(Cancelled)".to_string(),
-        JobState::Failed => "(Failed)".to_string(),
+        JobState::Completing => format_reason(job.state_reason.as_deref().unwrap_or("Completing")),
         JobState::Completed => config.hostname.clone(),
+        JobState::Cancelled => format_reason(job.state_reason.as_deref().unwrap_or("Cancelled")),
+        JobState::Failed => format_reason(job.state_reason.as_deref().unwrap_or("Failed")),
+        JobState::Timeout => format_reason(job.state_reason.as_deref().unwrap_or("TimeLimit")),
+        JobState::OutOfMemory => format_reason(job.state_reason.as_deref().unwrap_or("OutOfMemory")),
     }
 }
 
 fn format_exit_code(job: &JobRecord) -> String {
-    let exit = job.exit_code.unwrap_or(0);
-    format!("{exit}:0")
+    format!("{}:{}", job.exit_code.unwrap_or(0), job.term_signal.unwrap_or(0))
+}
+
+fn format_reason(reason: &str) -> String {
+    format!("({reason})")
 }
 
 fn now_ts() -> i64 {

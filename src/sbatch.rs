@@ -9,6 +9,7 @@ pub struct BatchDirectives {
     pub cpus_per_task: Option<u32>,
     pub mem_mb: Option<u64>,
     pub gpus: Option<u32>,
+    pub time_limit_secs: Option<u64>,
     pub output_path: Option<String>,
     pub error_path: Option<String>,
     pub chdir: Option<String>,
@@ -115,6 +116,40 @@ pub fn parse_mem_mb(value: &str) -> Result<u64> {
     Ok(mem_mb)
 }
 
+pub fn parse_time_limit_secs(value: &str) -> Result<u64> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(SlotdError::from("time limit cannot be empty"));
+    }
+
+    let (days, rest) = if let Some((days, rest)) = trimmed.split_once('-') {
+        let days: u64 = days
+            .parse()
+            .map_err(|_| SlotdError::from(format!("invalid time limit: {trimmed}")))?;
+        (days, rest)
+    } else {
+        (0, trimmed)
+    };
+
+    let parts = rest.split(':').collect::<Vec<_>>();
+    let (hours, minutes, seconds) = match parts.as_slice() {
+        [m] => (0, parse_time_component(m, trimmed)?, 0),
+        [m, s] => (
+            0,
+            parse_time_component(m, trimmed)?,
+            parse_time_component(s, trimmed)?,
+        ),
+        [h, m, s] => (
+            parse_time_component(h, trimmed)?,
+            parse_time_component(m, trimmed)?,
+            parse_time_component(s, trimmed)?,
+        ),
+        _ => return Err(SlotdError::from(format!("invalid time limit: {trimmed}"))),
+    };
+
+    Ok(days * 86_400 + hours * 3_600 + minutes * 60 + seconds)
+}
+
 fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<()> {
     let mut index = 0;
     while index < tokens.len() {
@@ -157,6 +192,15 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if let Some(value) = token.strip_prefix("--gpus=") {
             directives.gpus = Some(parse_u32("--gpus", value)?);
             1
+        } else if let Some(value) = token.strip_prefix("--time=") {
+            directives.time_limit_secs = Some(parse_time_limit_secs(value)?);
+            1
+        } else if let Some(value) = token.strip_prefix("-t=") {
+            directives.time_limit_secs = Some(parse_time_limit_secs(value)?);
+            1
+        } else if token == "--time" || token == "-t" {
+            directives.time_limit_secs = Some(parse_time_limit_secs(require_value(token, next)?)?);
+            2
         } else if let Some(value) = token.strip_prefix("-G=") {
             directives.gpus = Some(parse_u32("-G", value)?);
             1
@@ -210,13 +254,21 @@ fn parse_u32(flag: &str, value: &str) -> Result<u32> {
         .map_err(|_| SlotdError::from(format!("invalid value for {flag}: {value}")))
 }
 
+fn parse_time_component(value: &str, original: &str) -> Result<u64> {
+    value
+        .parse()
+        .map_err(|_| SlotdError::from(format!("invalid time limit: {original}")))
+}
+
 fn split_tokens(input: &str) -> Vec<String> {
     input.split_whitespace().map(ToString::to_string).collect()
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{default_batch_output_pattern, expand_output_pattern, parse_directives};
+    use super::{
+        default_batch_output_pattern, expand_output_pattern, parse_directives, parse_time_limit_secs,
+    };
 
     #[test]
     fn parses_long_and_short_sbatch_directives() {
@@ -258,5 +310,12 @@ echo start
         let value = expand_output_pattern("logs/%x-%j-%%-%u-%N.out", 42, "demo", "alice", "node1");
         assert_eq!(value, "logs/demo-42-%-alice-node1.out");
         assert_eq!(default_batch_output_pattern(), "slurm-%j.out");
+    }
+
+    #[test]
+    fn parses_time_limit_variants() {
+        assert_eq!(parse_time_limit_secs("90").expect("minutes"), 5_400);
+        assert_eq!(parse_time_limit_secs("01:30:00").expect("hms"), 5_400);
+        assert_eq!(parse_time_limit_secs("1-00:00:00").expect("days"), 86_400);
     }
 }

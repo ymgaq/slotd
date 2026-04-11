@@ -35,8 +35,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO jobs (
                 name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                requested_gpus, submit_time
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                requested_gpus, submit_time, state_reason, time_limit_secs
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
             params![
                 resolved_name,
                 request.user_name,
@@ -51,6 +51,8 @@ impl Store {
                 request.requested_memory_mb,
                 request.requested_gpus,
                 submit_time,
+                "Resources",
+                request.time_limit_secs.map(|value| value as i64),
             ],
         )?;
 
@@ -112,7 +114,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_gpus,
-                    submit_time, start_time, end_time, pid, pgid, exit_code,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs"
         )?;
@@ -142,7 +144,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_gpus,
-                    submit_time, start_time, end_time, pid, pgid, exit_code,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs"
         )?;
@@ -164,7 +166,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_gpus,
-                    submit_time, start_time, end_time, pid, pgid, exit_code,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'RUNNING'
@@ -180,7 +182,7 @@ impl Store {
             .query_row(
                 "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                         requested_gpus,
-                        submit_time, start_time, end_time, pid, pgid, exit_code,
+                        submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                         assigned_gpus, script_path, stdout_path, stderr_path
                  FROM jobs
                  WHERE id = ?1",
@@ -194,7 +196,7 @@ impl Store {
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_gpus, submit_time, start_time, end_time, pid, pgid, exit_code,
+                    requested_gpus, submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'PENDING'
@@ -215,7 +217,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs
-             SET state = 'RUNNING', pid = ?1, pgid = ?2, start_time = ?3, assigned_gpus = ?4
+             SET state = 'RUNNING', state_reason = '', pid = ?1, pgid = ?2, start_time = ?3, assigned_gpus = ?4
              WHERE id = ?5",
             params![pid, pgid, now_ts(), join_gpu_ids(assigned_gpu_ids), job_id],
         )?;
@@ -227,12 +229,31 @@ impl Store {
         job_id: i64,
         state: JobState,
         exit_code: Option<i32>,
+        term_signal: Option<i32>,
+        state_reason: Option<&str>,
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs
-             SET state = ?1, exit_code = ?2, end_time = ?3, assigned_gpus = ''
-             WHERE id = ?4",
-            params![state.as_str(), exit_code, now_ts(), job_id],
+             SET state = ?1, exit_code = ?2, term_signal = ?3, state_reason = ?4, end_time = ?5, assigned_gpus = ''
+             WHERE id = ?6",
+            params![
+                state.as_str(),
+                exit_code,
+                term_signal,
+                state_reason.unwrap_or(""),
+                now_ts(),
+                job_id
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_state(&self, job_id: i64, state: JobState, state_reason: Option<&str>) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs
+             SET state = ?1, state_reason = ?2
+             WHERE id = ?3",
+            params![state.as_str(), state_reason.unwrap_or(""), job_id],
         )?;
         Ok(())
     }
@@ -240,7 +261,7 @@ impl Store {
     pub fn cancel_pending_job(&self, job_id: i64) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE jobs
-             SET state = 'CANCELLED', end_time = ?1
+             SET state = 'CANCELLED', state_reason = 'CancelledByUser', end_time = ?1
              WHERE id = ?2 AND state = 'PENDING'",
             params![now_ts(), job_id],
         )?;
@@ -331,6 +352,24 @@ impl Store {
             "jobs",
             "assigned_gpus",
             "ALTER TABLE jobs ADD COLUMN assigned_gpus TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "state_reason",
+            "ALTER TABLE jobs ADD COLUMN state_reason TEXT NOT NULL DEFAULT ''",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "term_signal",
+            "ALTER TABLE jobs ADD COLUMN term_signal INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "time_limit_secs",
+            "ALTER TABLE jobs ADD COLUMN time_limit_secs INTEGER",
         )?;
         Ok(())
     }
@@ -448,16 +487,22 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         pid: row.get(13)?,
         pgid: row.get(14)?,
         exit_code: row.get(15)?,
-        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(16)?).map_err(|error| {
+        state_reason: row
+            .get::<_, String>(16)
+            .ok()
+            .filter(|value| !value.is_empty()),
+        term_signal: row.get(17)?,
+        time_limit_secs: row.get::<_, Option<i64>>(18)?.map(|value| value as u64),
+        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(19)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                16,
+                19,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        script_path: row.get(17)?,
-        stdout_path: row.get(18)?,
-        stderr_path: row.get(19)?,
+        script_path: row.get(20)?,
+        stdout_path: row.get(21)?,
+        stderr_path: row.get(22)?,
     })
 }
 

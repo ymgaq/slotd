@@ -100,7 +100,7 @@ impl Runner {
         for (&job_id, running) in &self.jobs {
             if let JobHandle::Adopted = running.handle {
                 if !process_group_alive(running.pgid)? {
-                    store.mark_finished(job_id, JobState::Failed, None)?;
+                    store.mark_finished(job_id, JobState::Failed, None, None, Some("LostAfterRestart"))?;
                     finished.push(job_id);
                 }
             }
@@ -119,13 +119,10 @@ impl Runner {
             match &mut running.handle {
                 JobHandle::Child(child) => {
                     if let Some(status) = child.try_wait()? {
-                        let exit_code = exit_signal(&status).or(status.code());
-                        let state = match exit_code {
-                            Some(0) => JobState::Completed,
-                            Some(_) => JobState::Failed,
-                            None => JobState::Failed,
-                        };
-                        store.mark_finished(job_id, state, exit_code)?;
+                        let exit_code = status.code();
+                        let term_signal = exit_signal(&status);
+                        let (state, reason) = terminal_state(exit_code, term_signal);
+                        store.mark_finished(job_id, state, exit_code, term_signal, Some(reason))?;
                         finished.push(job_id);
                     }
                 }
@@ -140,27 +137,75 @@ impl Runner {
         Ok(())
     }
 
+    pub fn enforce_timeouts(&mut self, config: &AppConfig, store: &Store) -> Result<()> {
+        let now = now_ts();
+        let timed_out = self
+            .jobs
+            .keys()
+            .copied()
+            .filter_map(|job_id| {
+                let job = store.get_job(job_id).ok().flatten()?;
+                let start = job.start_time?;
+                let limit = job.time_limit_secs?;
+                (job.state == JobState::Running && now >= start.saturating_add(limit as i64))
+                    .then_some(job_id)
+            })
+            .collect::<Vec<_>>();
+
+        for job_id in timed_out {
+            self.terminate_job(
+                config,
+                store,
+                job_id,
+                JobState::Timeout,
+                "TimeLimit",
+            )?;
+        }
+
+        Ok(())
+    }
+
     pub fn cancel(&mut self, config: &AppConfig, store: &Store, job_id: i64) -> Result<bool> {
         if store.cancel_pending_job(job_id)? {
             return Ok(true);
         }
 
-        let Some(running) = self.jobs.remove(&job_id) else {
+        if !self.jobs.contains_key(&job_id) {
             return Ok(false);
+        }
+
+        self.terminate_job(config, store, job_id, JobState::Cancelled, "CancelledByUser")?;
+        Ok(true)
+    }
+}
+
+impl Runner {
+    fn terminate_job(
+        &mut self,
+        config: &AppConfig,
+        store: &Store,
+        job_id: i64,
+        final_state: JobState,
+        final_reason: &str,
+    ) -> Result<()> {
+        let Some(running) = self.jobs.remove(&job_id) else {
+            return Ok(());
         };
+
+        store.mark_state(job_id, JobState::Completing, Some(final_reason))?;
 
         let pgid = Pid::from_raw(running.pgid);
         let _ = killpg(pgid, Signal::SIGTERM);
         thread::sleep(Duration::from_secs(config.cancel_grace_secs));
 
-        let exit_code = match running.handle {
+        let (exit_code, term_signal) = match running.handle {
             JobHandle::Child(mut child) => {
                 if let Some(status) = child.try_wait()? {
-                    exit_signal(&status).or(status.code())
+                    (status.code(), exit_signal(&status))
                 } else {
                     let _ = killpg(pgid, Signal::SIGKILL);
                     let status = child.wait()?;
-                    exit_signal(&status).or(status.code())
+                    (status.code(), exit_signal(&status).or(Some(Signal::SIGKILL as i32)))
                 }
             }
             JobHandle::Adopted => {
@@ -168,12 +213,21 @@ impl Runner {
                     let _ = killpg(pgid, Signal::SIGKILL);
                     wait_for_group_exit(running.pgid, config.cancel_grace_secs)?;
                 }
-                None
+                (None, Some(Signal::SIGKILL as i32))
             }
         };
 
-        store.mark_finished(job_id, JobState::Cancelled, exit_code)?;
-        Ok(true)
+        store.mark_finished(job_id, final_state, exit_code, term_signal, Some(final_reason))?;
+        Ok(())
+    }
+}
+
+fn terminal_state(exit_code: Option<i32>, term_signal: Option<i32>) -> (JobState, &'static str) {
+    match (exit_code, term_signal) {
+        (Some(0), None) => (JobState::Completed, "Completed"),
+        (Some(_), None) => (JobState::Failed, "NonZeroExitCode"),
+        (_, Some(_)) => (JobState::Failed, "Signal"),
+        _ => (JobState::Failed, "UnknownFailure"),
     }
 }
 
@@ -212,6 +266,14 @@ fn wait_for_group_exit(pgid: i32, timeout_secs: u64) -> Result<()> {
         thread::sleep(Duration::from_millis(100));
     }
     Ok(())
+}
+
+fn now_ts() -> i64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {

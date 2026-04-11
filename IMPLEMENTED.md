@@ -71,9 +71,12 @@ The currently implemented job states are:
 
 - `PENDING`
 - `RUNNING`
+- `COMPLETING`
 - `COMPLETED`
 - `FAILED`
 - `CANCELLED`
+- `TIMEOUT`
+- `OUT_OF_MEMORY`
 
 State behavior:
 
@@ -81,10 +84,18 @@ State behavior:
 - `srun` inserts a command job and waits for completion by default
 - the daemon scheduler starts a pending job when enough reserved resources are available
 - once spawned, the job becomes `RUNNING`
+- termination requested by timeout or cancellation passes through `COMPLETING`
 - an exit code of `0` becomes `COMPLETED`
 - a non-zero exit code or signal-based exit becomes `FAILED`
 - `scancel` changes a pending job directly to `CANCELLED`
 - `scancel` sends signals to a running job and records `CANCELLED`
+- jobs that exceed their configured time limit become `TIMEOUT`
+
+Reason and termination tracking:
+
+- jobs store a `state_reason`
+- jobs store a terminating signal separately from numeric exit code
+- queue and accounting output use these richer terminal details where available
 
 ## Scheduling Behavior
 
@@ -116,10 +127,12 @@ Implemented behavior:
 
 - `sbatch --cpus-per-task` sets requested CPUs
 - `sbatch --mem` sets requested memory in MB
+- `sbatch --time` sets requested time limit in seconds internally
 - `sbatch --partition` selects a configured partition
 - `sbatch --gpus` sets requested GPU slots
 - `srun --cpus-per-task` sets requested CPUs
 - `srun --mem` sets requested memory in MB
+- `srun --time` sets requested time limit in seconds internally
 - `srun --partition` selects a configured partition
 - `srun --gpus` sets requested GPU slots
 - `sinfo` reports partition state and GRES-style usage
@@ -160,6 +173,7 @@ Supported CLI options:
 - `-p`, `--partition`
 - `-c`, `--cpus-per-task`
 - `--mem`
+- `-t`, `--time`
 - `-G`, `--gpus`
 - `-o`, `--output`
 - `-e`, `--error`
@@ -172,6 +186,7 @@ Supported `#SBATCH` directives in script contents:
 - `-p`, `--partition`
 - `-c`, `--cpus-per-task`
 - `--mem`
+- `-t`, `--time`
 - `-G`, `--gpus`
 - `-o`, `--output`
 - `-e`, `--error`
@@ -219,6 +234,7 @@ Supported options:
 - `-p`, `--partition`
 - `-c`, `--cpus-per-task`
 - `--mem`
+- `-t`, `--time`
 - `-G`, `--gpus`
 - `-o`, `--output`
 - `-e`, `--error`
@@ -249,6 +265,7 @@ Implemented behavior:
 - if stdout and stderr resolve to the same path, one file is shared for both streams
 - the child process is started in a dedicated session via `setsid()`
 - the daemon tracks the child in memory while it is running
+- the daemon enforces configured time limits and terminates overdue jobs
 
 `scancel` behavior:
 
@@ -272,10 +289,13 @@ The `jobs` table currently stores:
 - requested CPUs
 - requested memory
 - requested GPUs
+- configured time limit
 - assigned GPU IDs
 - submit, start, and end timestamps
 - PID and PGID
 - exit code
+- terminating signal
+- state reason
 - script path
 - stdout path
 - stderr path
@@ -377,13 +397,14 @@ Supported `sacct --format` fields:
 - `Partition`
 - `User`
 - `State`
+- `Reason`
 - `ExitCode`
 - `Elapsed`
 
 Formatting notes:
 
 - output columns are width-aligned for the human-readable default mode
-- `ExitCode` is currently rendered as `<code>:0`
+- `ExitCode` is currently rendered as `<code>:<signal>`
 
 ### `sinfo`
 
@@ -443,7 +464,7 @@ The following planned features are not implemented yet:
 
 - real-time `srun` stdio streaming
 - `srun --pty`
-- richer terminal states such as `COMPLETING`, `TIMEOUT`, `OUT_OF_MEMORY`
+- exact runtime detection for `OUT_OF_MEMORY`
 - full Slurm `--format` syntax and field coverage
 - `sbatch --wait`
 - dependency handling
@@ -460,6 +481,7 @@ The repository is currently verified by unit tests for:
 
 - argv[0] command alias dispatch
 - time-filter parsing for `sacct`
+- time-limit parsing for `sbatch` / `srun`
 - `#SBATCH` parsing rules
 - supported `--format` field parsing for `squeue`, `sacct`, and `sinfo`
 - output pattern expansion for `%j`, `%x`, `%u`, `%N`, and `%%`

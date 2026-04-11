@@ -5,9 +5,12 @@ use serde::{Deserialize, Serialize};
 pub enum JobState {
     Pending,
     Running,
+    Completing,
     Completed,
     Failed,
     Cancelled,
+    Timeout,
+    OutOfMemory,
 }
 
 impl JobState {
@@ -15,9 +18,12 @@ impl JobState {
         match self {
             Self::Pending => "PENDING",
             Self::Running => "RUNNING",
+            Self::Completing => "COMPLETING",
             Self::Completed => "COMPLETED",
             Self::Failed => "FAILED",
             Self::Cancelled => "CANCELLED",
+            Self::Timeout => "TIMEOUT",
+            Self::OutOfMemory => "OUT_OF_MEMORY",
         }
     }
 
@@ -25,14 +31,20 @@ impl JobState {
         match self {
             Self::Pending => "PD",
             Self::Running => "R",
+            Self::Completing => "CG",
             Self::Completed => "CD",
             Self::Failed => "F",
             Self::Cancelled => "CA",
+            Self::Timeout => "TO",
+            Self::OutOfMemory => "OOM",
         }
     }
 
     pub fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Failed | Self::Cancelled | Self::Timeout | Self::OutOfMemory
+        )
     }
 }
 
@@ -43,9 +55,12 @@ impl std::str::FromStr for JobState {
         match value {
             "PENDING" => Ok(Self::Pending),
             "RUNNING" => Ok(Self::Running),
+            "COMPLETING" => Ok(Self::Completing),
             "COMPLETED" => Ok(Self::Completed),
             "FAILED" => Ok(Self::Failed),
             "CANCELLED" => Ok(Self::Cancelled),
+            "TIMEOUT" => Ok(Self::Timeout),
+            "OUT_OF_MEMORY" => Ok(Self::OutOfMemory),
             other => Err(format!("unknown job state: {other}")),
         }
     }
@@ -69,6 +84,9 @@ pub struct JobRecord {
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
     pub exit_code: Option<i32>,
+    pub state_reason: Option<String>,
+    pub term_signal: Option<i32>,
+    pub time_limit_secs: Option<u64>,
     pub assigned_gpu_ids: Vec<u32>,
     pub script_path: String,
     pub stdout_path: String,
@@ -87,6 +105,7 @@ pub struct SubmitRequest {
     pub requested_cpus: u32,
     pub requested_memory_mb: u64,
     pub requested_gpus: u32,
+    pub time_limit_secs: Option<u64>,
     pub stdout_path: Option<String>,
     pub stderr_path: Option<String>,
 }

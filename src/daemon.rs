@@ -27,6 +27,7 @@ pub fn run(config: AppConfig) -> Result<()> {
 
     loop {
         handle_requests(&listener, &config, &store, &mut runner)?;
+        runner.enforce_timeouts(&config, &store)?;
         runner.poll(&store)?;
         runner.reconcile_adopted(&store)?;
         schedule_pending_jobs(&store, &mut runner)?;
