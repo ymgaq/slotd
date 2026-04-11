@@ -52,10 +52,12 @@ pub struct JobRecord {
     pub id: i64,
     pub name: String,
     pub state: JobState,
+    pub partition: String,
     pub command: String,
     pub cwd: String,
     pub requested_cpus: u32,
     pub requested_memory_mb: u64,
+    pub requested_gpus: u32,
     pub submit_time: i64,
     pub start_time: Option<i64>,
     pub end_time: Option<i64>,
@@ -70,21 +72,32 @@ pub struct JobRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmitRequest {
     pub name: Option<String>,
+    pub partition: String,
     pub cwd: String,
     pub script_name: String,
     pub script_body: String,
+    pub command_override: Option<String>,
     pub requested_cpus: u32,
     pub requested_memory_mb: u64,
+    pub requested_gpus: u32,
     pub stdout_path: Option<String>,
     pub stderr_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NodeInfo {
+    pub partitions: Vec<PartitionInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartitionInfo {
+    pub name: String,
     pub total_cpus: u32,
     pub total_memory_mb: u64,
+    pub total_gpus: u32,
     pub allocated_cpus: u32,
     pub allocated_memory_mb: u64,
+    pub allocated_gpus: u32,
     pub running_jobs: usize,
     pub pending_jobs: usize,
 }

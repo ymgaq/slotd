@@ -5,8 +5,10 @@ use crate::error::{Result, SlotdError};
 #[derive(Debug, Default, Clone)]
 pub struct BatchDirectives {
     pub job_name: Option<String>,
+    pub partition: Option<String>,
     pub cpus_per_task: Option<u32>,
     pub mem_mb: Option<u64>,
+    pub gpus: Option<u32>,
     pub output_path: Option<String>,
     pub error_path: Option<String>,
 }
@@ -80,6 +82,15 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         let consumed = if let Some(value) = token.strip_prefix("--job-name=") {
             directives.job_name = Some(value.to_string());
             1
+        } else if let Some(value) = token.strip_prefix("--partition=") {
+            directives.partition = Some(value.to_string());
+            1
+        } else if let Some(value) = token.strip_prefix("-p=") {
+            directives.partition = Some(value.to_string());
+            1
+        } else if token == "--partition" || token == "-p" {
+            directives.partition = Some(require_value(token, next)?.to_string());
+            2
         } else if token == "--job-name" {
             directives.job_name = Some(require_value(token, next)?.to_string());
             2
@@ -94,6 +105,12 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
             1
         } else if token == "--mem" {
             directives.mem_mb = Some(parse_mem_mb(require_value(token, next)?)?);
+            2
+        } else if let Some(value) = token.strip_prefix("--gpus=") {
+            directives.gpus = Some(parse_u32("--gpus", value)?);
+            1
+        } else if token == "--gpus" {
+            directives.gpus = Some(parse_u32(token, require_value(token, next)?)?);
             2
         } else if let Some(value) = token.strip_prefix("--output=") {
             directives.output_path = Some(value.to_string());

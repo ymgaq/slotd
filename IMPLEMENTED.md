@@ -10,6 +10,8 @@ At this stage, `slotd` is a single-binary Rust application that provides:
 
 - a local daemon
 - batch job submission
+- command submission via `srun`
+- partition-aware scheduling for `cpu` and `gpu`
 - queue inspection
 - job cancellation
 - single-node resource display
@@ -21,6 +23,7 @@ The current binary supports these subcommands:
 
 - `slotd daemon`
 - `slotd sbatch <script>`
+- `slotd srun [options] -- <command...>`
 - `slotd squeue`
 - `slotd scancel <job_id>`
 - `slotd sinfo`
@@ -28,6 +31,7 @@ The current binary supports these subcommands:
 The CLI also supports Slurm-like command aliases through `argv[0]` dispatch for:
 
 - `sbatch`
+- `srun`
 - `squeue`
 - `scancel`
 - `sinfo`
@@ -50,6 +54,10 @@ Paths:
 
 The root directory can be changed with the `SLOTD_ROOT` environment variable.
 
+GPU capacity can be configured with:
+
+- `SLOTD_GPU_COUNT`
+
 ## Implemented Job Lifecycle
 
 The currently implemented job states are:
@@ -63,6 +71,7 @@ The currently implemented job states are:
 State behavior:
 
 - `sbatch` inserts a new job as `PENDING`
+- `srun` can insert a command job and start it immediately when resources are free
 - the daemon scheduler starts a pending job when enough reserved resources are available
 - once spawned, the job becomes `RUNNING`
 - an exit code of `0` becomes `COMPLETED`
@@ -78,8 +87,9 @@ Implemented behavior:
 
 - the daemon checks for runnable jobs in ID order
 - only one pending job is selected per scheduler loop iteration
-- resource admission is based on reserved CPU and memory values
+- resource admission is based on reserved CPU, memory, and GPU values
 - resources are derived from currently running jobs recorded in SQLite
+- supported partitions are `cpu` and `gpu`
 
 Scheduler timing:
 
@@ -89,6 +99,7 @@ Resource defaults:
 
 - total CPUs: detected from `std::thread::available_parallelism()`
 - total memory: fixed at `16384 MB`
+- total GPUs: `SLOTD_GPU_COUNT`, default `1`
 
 ## Resource Model
 
@@ -98,8 +109,20 @@ Implemented behavior:
 
 - `sbatch --cpus-per-task` sets requested CPUs
 - `sbatch --mem` sets requested memory in MB
+- `sbatch --partition` selects `cpu` or `gpu`
+- `sbatch --gpus` sets requested GPU slots
+- `srun --cpus-per-task` sets requested CPUs
+- `srun --mem` sets requested memory in MB
+- `srun --partition` selects `cpu` or `gpu`
+- `srun --gpus` sets requested GPU slots
 - `sinfo` reports total and allocated reserved resources
 - jobs are admitted only if requested resources fit within remaining reserved capacity
+
+Partition behavior:
+
+- `cpu` jobs must request `0` GPUs
+- `gpu` jobs can request GPU slots
+- if `gpu` is selected without an explicit GPU count, the default is `1`
 
 Not implemented yet:
 
@@ -120,16 +143,20 @@ Not implemented yet:
 Supported CLI options:
 
 - `--job-name`
+- `--partition`
 - `--cpus-per-task`
 - `--mem`
+- `--gpus`
 - `--output`
 - `--error`
 
 Supported `#SBATCH` directives in script contents:
 
 - `--job-name`
+- `--partition`
 - `--cpus-per-task`
 - `--mem`
+- `--gpus`
 - `--output`
 - `--error`
 
@@ -141,6 +168,38 @@ Precedence:
 Not implemented yet:
 
 - partitions, accounts, priorities, dependencies, arrays
+
+## Command Submission
+
+`srun` currently works as follows:
+
+- accepts a direct command after `--`
+- builds a small shell script wrapper internally
+- submits the command as a scheduler-managed job
+- records the command string in the job table for display in `squeue`
+- starts the job immediately if resources are currently available
+- otherwise leaves it queued as `PENDING`
+
+Supported options:
+
+- `--job-name`
+- `--partition`
+- `--cpus-per-task`
+- `--mem`
+- `--gpus`
+- `--output`
+- `--error`
+- `--immediate`
+
+Current `--immediate` behavior:
+
+- if enough resources are available right now, the command job is accepted
+- if enough resources are not available, submission fails immediately
+
+Not implemented yet:
+
+- interactive stdio streaming back to the caller
+- synchronous foreground waiting semantics like full Slurm `srun`
 
 ## Job Execution
 
@@ -171,10 +230,12 @@ The `jobs` table currently stores:
 - job ID
 - job name
 - state
+- partition
 - command string
 - working directory
 - requested CPUs
 - requested memory
+- requested GPUs
 - submit, start, and end timestamps
 - PID and PGID
 - exit code
@@ -193,6 +254,7 @@ The CLI and daemon communicate over a Unix domain socket using newline-delimited
 Implemented request types:
 
 - submit batch job
+- submit command job
 - list jobs
 - cancel job
 - query node info
@@ -213,9 +275,11 @@ Current columns:
 
 - `JOBID`
 - `NAME`
+- `PART`
 - `ST`
 - `CPU`
 - `MEM`
+- `GPU`
 - `SUBMIT_TIME`
 - `COMMAND`
 
@@ -229,10 +293,13 @@ Notes:
 
 Current fields:
 
+- partition name
 - total CPUs
 - allocated CPUs
 - total memory in MB
 - allocated memory in MB
+- total GPUs
+- allocated GPUs
 - running job count
 - pending job count
 

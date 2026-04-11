@@ -10,8 +10,14 @@ use crate::job::{JobRecord, NodeInfo, SubmitRequest};
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
     SubmitBatch(SubmitRequest),
+    SubmitRun {
+        request: SubmitRequest,
+        immediate: bool,
+    },
     ListJobs,
-    Cancel { job_id: i64 },
+    Cancel {
+        job_id: i64,
+    },
     NodeInfo,
 }
 

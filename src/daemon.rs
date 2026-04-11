@@ -7,6 +7,7 @@ use std::time::Duration;
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::ipc::{Request, Response};
+use crate::job::SubmitRequest;
 use crate::recovery;
 use crate::runner::Runner;
 use crate::store::Store;
@@ -65,8 +66,10 @@ fn handle_stream(
     let response = match request {
         Request::SubmitBatch(request) => {
             let job_id = store.create_job(request)?;
+            schedule_pending_jobs(store, runner)?;
             Response::Submitted { job_id }
         }
+        Request::SubmitRun { request, immediate } => submit_run(store, runner, request, immediate)?,
         Request::ListJobs => Response::Jobs {
             jobs: store.list_jobs()?,
         },
@@ -91,9 +94,70 @@ fn handle_stream(
 }
 
 fn schedule_pending_jobs(store: &Store, runner: &mut Runner) -> Result<()> {
-    let (available_cpus, available_memory_mb) = store.available_resources()?;
-    if let Some(job) = store.next_pending_job(available_cpus, available_memory_mb)? {
-        runner.launch(store, &job)?;
+    loop {
+        let pending_jobs = store.next_pending_jobs()?;
+        let next_job = pending_jobs.into_iter().find(|job| {
+            resources_fit(
+                store,
+                &job.partition,
+                job.requested_cpus,
+                job.requested_memory_mb,
+                job.requested_gpus,
+            )
+            .unwrap_or(false)
+        });
+
+        if let Some(job) = next_job {
+            runner.launch(store, &job)?;
+        } else {
+            break;
+        }
     }
     Ok(())
+}
+
+fn submit_run(
+    store: &Store,
+    runner: &mut Runner,
+    request: SubmitRequest,
+    immediate: bool,
+) -> Result<Response> {
+    let can_start_now = resources_fit(
+        store,
+        &request.partition,
+        request.requested_cpus,
+        request.requested_memory_mb,
+        request.requested_gpus,
+    )?;
+    if immediate && !can_start_now {
+        return Ok(Response::Error {
+            message: "resources are not currently available for --immediate srun".to_string(),
+        });
+    }
+
+    let job_id = store.create_job(request)?;
+    if can_start_now {
+        if let Some(job) = store.get_job(job_id)? {
+            runner.launch(store, &job)?;
+        }
+    }
+
+    Ok(Response::Submitted { job_id })
+}
+
+fn resources_fit(
+    store: &Store,
+    partition: &str,
+    requested_cpus: u32,
+    requested_memory_mb: u64,
+    requested_gpus: u32,
+) -> Result<bool> {
+    let (available_cpus, available_memory_mb, available_gpus) = store.available_resources()?;
+    let enough_base =
+        requested_cpus <= available_cpus && requested_memory_mb <= available_memory_mb;
+    let enough_gpu = match partition {
+        "gpu" => requested_gpus <= available_gpus,
+        _ => requested_gpus == 0,
+    };
+    Ok(enough_base && enough_gpu)
 }

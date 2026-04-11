@@ -14,6 +14,7 @@ pub struct AppConfig {
     pub cancel_grace_secs: u64,
     pub total_cpus: u32,
     pub total_memory_mb: u64,
+    pub total_gpus: u32,
 }
 
 impl AppConfig {
@@ -36,6 +37,7 @@ impl AppConfig {
             cancel_grace_secs: 2,
             total_cpus: available_parallelism(),
             total_memory_mb: 16 * 1024,
+            total_gpus: env_u32("SLOTD_GPU_COUNT", 1),
         }
     }
 
@@ -44,10 +46,29 @@ impl AppConfig {
         fs::create_dir_all(&self.jobs_dir)?;
         Ok(())
     }
+
+    pub fn has_partition(&self, partition: &str) -> bool {
+        matches!(partition, "cpu" | "gpu")
+    }
+
+    pub fn default_partition(&self) -> &'static str {
+        "cpu"
+    }
+
+    pub fn default_gpus_for_partition(&self, partition: &str) -> u32 {
+        if partition == "gpu" { 1 } else { 0 }
+    }
 }
 
 fn available_parallelism() -> u32 {
     std::thread::available_parallelism()
         .map(|count| count.get() as u32)
         .unwrap_or(1)
+}
+
+fn env_u32(name: &str, default: u32) -> u32 {
+    env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }

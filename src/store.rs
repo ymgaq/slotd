@@ -20,7 +20,9 @@ impl Store {
         config.ensure_dirs()?;
         let conn = Connection::open(&config.db_path)?;
         conn.execute_batch(MIGRATION_SQL)?;
-        Ok(Self { conn, config })
+        let store = Self { conn, config };
+        store.ensure_compat_schema()?;
+        Ok(store)
     }
 
     pub fn create_job(&self, request: SubmitRequest) -> Result<i64> {
@@ -31,15 +33,21 @@ impl Store {
             .unwrap_or_else(|| default_name(&request.script_name));
         self.conn.execute(
             "INSERT INTO jobs (
-                name, state, command, cwd, requested_cpus, requested_memory_mb, submit_time
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                requested_gpus, submit_time
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
             params![
                 resolved_name,
                 JobState::Pending.as_str(),
-                script_command(&request.script_name),
+                request.partition,
+                request
+                    .command_override
+                    .clone()
+                    .unwrap_or_else(|| script_command(&request.script_name)),
                 request.cwd,
                 request.requested_cpus,
                 request.requested_memory_mb,
+                request.requested_gpus,
                 submit_time,
             ],
         )?;
@@ -81,7 +89,8 @@ impl Store {
 
     pub fn list_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, state, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                    requested_gpus,
                     submit_time, start_time, end_time, pid, pgid, exit_code,
                     script_path, stdout_path, stderr_path
              FROM jobs
@@ -94,7 +103,8 @@ impl Store {
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, state, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                    requested_gpus,
                     submit_time, start_time, end_time, pid, pgid, exit_code,
                     script_path, stdout_path, stderr_path
              FROM jobs
@@ -106,24 +116,34 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn next_pending_job(
-        &self,
-        available_cpus: u32,
-        available_memory_mb: u64,
-    ) -> Result<Option<JobRecord>> {
+    pub fn get_job(&self, job_id: i64) -> Result<Option<JobRecord>> {
+        self.conn
+            .query_row(
+                "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                        requested_gpus,
+                        submit_time, start_time, end_time, pid, pgid, exit_code,
+                        script_path, stdout_path, stderr_path
+                 FROM jobs
+                 WHERE id = ?1",
+                [job_id],
+                map_job,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, state, command, cwd, requested_cpus, requested_memory_mb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code,
+            "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                    requested_gpus, submit_time, start_time, end_time, pid, pgid, exit_code,
                     script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'PENDING'
-               AND requested_cpus <= ?1
-               AND requested_memory_mb <= ?2
              ORDER BY id ASC
-             LIMIT 1",
+            ",
         )?;
-        stmt.query_row(params![available_cpus, available_memory_mb], map_job)
-            .optional()
+        let rows = stmt.query_map([], map_job)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
     }
 
@@ -163,48 +183,96 @@ impl Store {
     }
 
     pub fn node_info(&self) -> Result<NodeInfo> {
-        let running_jobs = self.count_jobs_by_state(JobState::Running)?;
-        let pending_jobs = self.count_jobs_by_state(JobState::Pending)?;
-        let (allocated_cpus, allocated_memory_mb) = self.running_resource_usage()?;
+        let cpu = self.partition_info("cpu")?;
+        let gpu = self.partition_info("gpu")?;
         Ok(NodeInfo {
+            partitions: vec![cpu, gpu],
+        })
+    }
+
+    pub fn running_resource_usage(&self) -> Result<(u32, u64, u32)> {
+        let mut stmt = self.conn.prepare(
+            "SELECT COALESCE(SUM(requested_cpus), 0), COALESCE(SUM(requested_memory_mb), 0),
+                    COALESCE(SUM(requested_gpus), 0)
+             FROM jobs
+             WHERE state = 'RUNNING'",
+        )?;
+        let (cpus, mem, gpus) = stmt.query_row([], |row| {
+            let cpus: u32 = row.get(0)?;
+            let mem: u64 = row.get(1)?;
+            let gpus: u32 = row.get(2)?;
+            Ok((cpus, mem, gpus))
+        })?;
+        Ok((cpus, mem, gpus))
+    }
+
+    pub fn available_resources(&self) -> Result<(u32, u64, u32)> {
+        let (used_cpus, used_memory, used_gpus) = self.running_resource_usage()?;
+        Ok((
+            self.config.total_cpus.saturating_sub(used_cpus),
+            self.config.total_memory_mb.saturating_sub(used_memory),
+            self.config.total_gpus.saturating_sub(used_gpus),
+        ))
+    }
+
+    fn ensure_compat_schema(&self) -> Result<()> {
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "partition",
+            "ALTER TABLE jobs ADD COLUMN partition TEXT NOT NULL DEFAULT 'cpu'",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "requested_gpus",
+            "ALTER TABLE jobs ADD COLUMN requested_gpus INTEGER NOT NULL DEFAULT 0",
+        )?;
+        Ok(())
+    }
+
+    fn partition_info(&self, partition: &str) -> Result<crate::job::PartitionInfo> {
+        let (allocated_cpus, allocated_memory_mb, allocated_gpus) =
+            self.running_usage_for_partition(partition)?;
+        let running_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Running)?;
+        let pending_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Pending)?;
+        Ok(crate::job::PartitionInfo {
+            name: partition.to_string(),
             total_cpus: self.config.total_cpus,
             total_memory_mb: self.config.total_memory_mb,
+            total_gpus: if partition == "gpu" {
+                self.config.total_gpus
+            } else {
+                0
+            },
             allocated_cpus,
             allocated_memory_mb,
+            allocated_gpus,
             running_jobs,
             pending_jobs,
         })
     }
 
-    pub fn running_resource_usage(&self) -> Result<(u32, u64)> {
+    fn running_usage_for_partition(&self, partition: &str) -> Result<(u32, u64, u32)> {
         let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(SUM(requested_cpus), 0), COALESCE(SUM(requested_memory_mb), 0)
+            "SELECT COALESCE(SUM(requested_cpus), 0), COALESCE(SUM(requested_memory_mb), 0),
+                    COALESCE(SUM(requested_gpus), 0)
              FROM jobs
-             WHERE state = 'RUNNING'",
+             WHERE state = 'RUNNING' AND partition = ?1",
         )?;
-        let (cpus, mem) = stmt.query_row([], |row| {
-            let cpus: u32 = row.get(0)?;
-            let mem: u64 = row.get(1)?;
-            Ok((cpus, mem))
+        let usage = stmt.query_row([partition], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
         })?;
-        Ok((cpus, mem))
+        Ok(usage)
     }
 
-    fn count_jobs_by_state(&self, state: JobState) -> Result<usize> {
+    fn count_jobs_by_partition_and_state(&self, partition: &str, state: JobState) -> Result<usize> {
         let count = self.conn.query_row(
-            "SELECT COUNT(*) FROM jobs WHERE state = ?1",
-            [state.as_str()],
+            "SELECT COUNT(*) FROM jobs WHERE partition = ?1 AND state = ?2",
+            params![partition, state.as_str()],
             |row| row.get::<_, i64>(0),
         )?;
         Ok(count as usize)
-    }
-
-    pub fn available_resources(&self) -> Result<(u32, u64)> {
-        let (used_cpus, used_memory) = self.running_resource_usage()?;
-        Ok((
-            self.config.total_cpus.saturating_sub(used_cpus),
-            self.config.total_memory_mb.saturating_sub(used_memory),
-        ))
     }
 }
 
@@ -221,19 +289,21 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         id: row.get(0)?,
         name: row.get(1)?,
         state,
-        command: row.get(3)?,
-        cwd: row.get(4)?,
-        requested_cpus: row.get(5)?,
-        requested_memory_mb: row.get(6)?,
-        submit_time: row.get(7)?,
-        start_time: row.get(8)?,
-        end_time: row.get(9)?,
-        pid: row.get(10)?,
-        pgid: row.get(11)?,
-        exit_code: row.get(12)?,
-        script_path: row.get(13)?,
-        stdout_path: row.get(14)?,
-        stderr_path: row.get(15)?,
+        partition: row.get(3)?,
+        command: row.get(4)?,
+        cwd: row.get(5)?,
+        requested_cpus: row.get(6)?,
+        requested_memory_mb: row.get(7)?,
+        requested_gpus: row.get(8)?,
+        submit_time: row.get(9)?,
+        start_time: row.get(10)?,
+        end_time: row.get(11)?,
+        pid: row.get(12)?,
+        pgid: row.get(13)?,
+        exit_code: row.get(14)?,
+        script_path: row.get(15)?,
+        stdout_path: row.get(16)?,
+        stderr_path: row.get(17)?,
     })
 }
 
@@ -264,6 +334,23 @@ fn path_string(path: &PathBuf) -> String {
 fn ensure_parent_dir(path: &Path) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+fn ensure_column(conn: &Connection, table: &str, column: &str, alter_sql: &str) -> Result<()> {
+    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
+    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    let mut exists = false;
+    for entry in columns {
+        if entry? == column {
+            exists = true;
+            break;
+        }
+    }
+
+    if !exists {
+        conn.execute_batch(alter_sql)?;
     }
     Ok(())
 }
