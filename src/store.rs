@@ -33,11 +33,12 @@ impl Store {
             .unwrap_or_else(|| default_name(&request.script_name));
         self.conn.execute(
             "INSERT INTO jobs (
-                name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                 requested_gpus, submit_time
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 resolved_name,
+                request.user_name,
                 JobState::Pending.as_str(),
                 request.partition,
                 request
@@ -87,26 +88,44 @@ impl Store {
         Ok(job_id)
     }
 
-    pub fn list_jobs(&self) -> Result<Vec<JobRecord>> {
+    pub fn list_jobs(&self, states: Option<&[JobState]>) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_gpus,
                     submit_time, start_time, end_time, pid, pgid, exit_code,
-                    script_path, stdout_path, stderr_path
-             FROM jobs
-             ORDER BY id DESC",
+                    assigned_gpus, script_path, stdout_path, stderr_path
+             FROM jobs"
         )?;
         let rows = stmt.query_map([], map_job)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        jobs.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(filter_jobs(jobs, states, None))
+    }
+
+    pub fn list_accounting_jobs(
+        &self,
+        states: Option<&[JobState]>,
+        ids: Option<&[i64]>,
+    ) -> Result<Vec<JobRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                    requested_gpus,
+                    submit_time, start_time, end_time, pid, pgid, exit_code,
+                    assigned_gpus, script_path, stdout_path, stderr_path
+             FROM jobs"
+        )?;
+        let rows = stmt.query_map([], map_job)?;
+        let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        jobs.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(filter_jobs(jobs, states, ids))
     }
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_gpus,
                     submit_time, start_time, end_time, pid, pgid, exit_code,
-                    script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'RUNNING'
              ORDER BY id ASC",
@@ -119,10 +138,10 @@ impl Store {
     pub fn get_job(&self, job_id: i64) -> Result<Option<JobRecord>> {
         self.conn
             .query_row(
-                "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                         requested_gpus,
                         submit_time, start_time, end_time, pid, pgid, exit_code,
-                        script_path, stdout_path, stderr_path
+                        assigned_gpus, script_path, stdout_path, stderr_path
                  FROM jobs
                  WHERE id = ?1",
                 [job_id],
@@ -134,9 +153,9 @@ impl Store {
 
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+            "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_gpus, submit_time, start_time, end_time, pid, pgid, exit_code,
-                    script_path, stdout_path, stderr_path
+                    assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'PENDING'
              ORDER BY id ASC
@@ -147,12 +166,18 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub fn mark_running(&self, job_id: i64, pid: i32, pgid: i32) -> Result<()> {
+    pub fn mark_running(
+        &self,
+        job_id: i64,
+        pid: i32,
+        pgid: i32,
+        assigned_gpu_ids: &[u32],
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs
-             SET state = 'RUNNING', pid = ?1, pgid = ?2, start_time = ?3
-             WHERE id = ?4",
-            params![pid, pgid, now_ts(), job_id],
+             SET state = 'RUNNING', pid = ?1, pgid = ?2, start_time = ?3, assigned_gpus = ?4
+             WHERE id = ?5",
+            params![pid, pgid, now_ts(), join_gpu_ids(assigned_gpu_ids), job_id],
         )?;
         Ok(())
     }
@@ -165,7 +190,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs
-             SET state = ?1, exit_code = ?2, end_time = ?3
+             SET state = ?1, exit_code = ?2, end_time = ?3, assigned_gpus = ''
              WHERE id = ?4",
             params![state.as_str(), exit_code, now_ts(), job_id],
         )?;
@@ -215,6 +240,33 @@ impl Store {
         ))
     }
 
+    pub fn allocate_gpu_ids(&self, requested_gpus: u32) -> Result<Vec<u32>> {
+        if requested_gpus == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut used = self.used_gpu_ids()?;
+        used.sort_unstable();
+
+        let mut assigned = Vec::new();
+        for gpu_id in 0..self.config.total_gpus {
+            if used.binary_search(&gpu_id).is_err() {
+                assigned.push(gpu_id);
+                if assigned.len() == requested_gpus as usize {
+                    break;
+                }
+            }
+        }
+
+        if assigned.len() == requested_gpus as usize {
+            Ok(assigned)
+        } else {
+            Err(SlotdError::from(
+                "not enough free GPU IDs to satisfy the request",
+            ))
+        }
+    }
+
     fn ensure_compat_schema(&self) -> Result<()> {
         ensure_column(
             &self.conn,
@@ -225,8 +277,20 @@ impl Store {
         ensure_column(
             &self.conn,
             "jobs",
+            "user_name",
+            "ALTER TABLE jobs ADD COLUMN user_name TEXT NOT NULL DEFAULT 'unknown'",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
             "requested_gpus",
             "ALTER TABLE jobs ADD COLUMN requested_gpus INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "assigned_gpus",
+            "ALTER TABLE jobs ADD COLUMN assigned_gpus TEXT NOT NULL DEFAULT ''",
         )?;
         Ok(())
     }
@@ -236,8 +300,24 @@ impl Store {
             self.running_usage_for_partition(partition)?;
         let running_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Running)?;
         let pending_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Pending)?;
+        let state = partition_state(
+            partition,
+            allocated_cpus,
+            allocated_gpus,
+            self.config.total_cpus,
+            self.config.total_gpus,
+        );
+        let gres_used = partition_gres_used(
+            partition,
+            &self.config.gpu_model,
+            self.config.total_gpus,
+            &self.used_gpu_ids_for_partition(partition)?,
+        );
         Ok(crate::job::PartitionInfo {
             name: partition.to_string(),
+            hostname: self.config.hostname.clone(),
+            state,
+            gres_used,
             total_cpus: self.config.total_cpus,
             total_memory_mb: self.config.total_memory_mb,
             total_gpus: if partition == "gpu" {
@@ -266,6 +346,32 @@ impl Store {
         Ok(usage)
     }
 
+    fn used_gpu_ids(&self) -> Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT assigned_gpus FROM jobs WHERE state = 'RUNNING' AND assigned_gpus <> ''",
+        )?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.extend(parse_gpu_ids(&row?)?);
+        }
+        Ok(ids)
+    }
+
+    fn used_gpu_ids_for_partition(&self, partition: &str) -> Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT assigned_gpus FROM jobs
+             WHERE state = 'RUNNING' AND partition = ?1 AND assigned_gpus <> ''",
+        )?;
+        let rows = stmt.query_map([partition], |row| row.get::<_, String>(0))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.extend(parse_gpu_ids(&row?)?);
+        }
+        ids.sort_unstable();
+        Ok(ids)
+    }
+
     fn count_jobs_by_partition_and_state(&self, partition: &str, state: JobState) -> Result<usize> {
         let count = self.conn.query_row(
             "SELECT COUNT(*) FROM jobs WHERE partition = ?1 AND state = ?2",
@@ -277,10 +383,10 @@ impl Store {
 }
 
 fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
-    let state_text: String = row.get(2)?;
+    let state_text: String = row.get(3)?;
     let state = state_text.parse().map_err(|message: String| {
         rusqlite::Error::FromSqlConversionFailure(
-            2,
+            3,
             rusqlite::types::Type::Text,
             Box::new(SlotdError::from(message)),
         )
@@ -288,22 +394,30 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
     Ok(JobRecord {
         id: row.get(0)?,
         name: row.get(1)?,
+        user_name: row.get(2)?,
         state,
-        partition: row.get(3)?,
-        command: row.get(4)?,
-        cwd: row.get(5)?,
-        requested_cpus: row.get(6)?,
-        requested_memory_mb: row.get(7)?,
-        requested_gpus: row.get(8)?,
-        submit_time: row.get(9)?,
-        start_time: row.get(10)?,
-        end_time: row.get(11)?,
-        pid: row.get(12)?,
-        pgid: row.get(13)?,
-        exit_code: row.get(14)?,
-        script_path: row.get(15)?,
-        stdout_path: row.get(16)?,
-        stderr_path: row.get(17)?,
+        partition: row.get(4)?,
+        command: row.get(5)?,
+        cwd: row.get(6)?,
+        requested_cpus: row.get(7)?,
+        requested_memory_mb: row.get(8)?,
+        requested_gpus: row.get(9)?,
+        submit_time: row.get(10)?,
+        start_time: row.get(11)?,
+        end_time: row.get(12)?,
+        pid: row.get(13)?,
+        pgid: row.get(14)?,
+        exit_code: row.get(15)?,
+        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(16)?).map_err(|error| {
+            rusqlite::Error::FromSqlConversionFailure(
+                16,
+                rusqlite::types::Type::Text,
+                Box::new(error),
+            )
+        })?,
+        script_path: row.get(17)?,
+        stdout_path: row.get(18)?,
+        stderr_path: row.get(19)?,
     })
 }
 
@@ -353,4 +467,85 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, alter_sql: &str) 
         conn.execute_batch(alter_sql)?;
     }
     Ok(())
+}
+
+fn join_gpu_ids(ids: &[u32]) -> String {
+    ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn parse_gpu_ids(value: &str) -> Result<Vec<u32>> {
+    if value.trim().is_empty() {
+        return Ok(Vec::new());
+    }
+
+    value
+        .split(',')
+        .map(|part| {
+            part.trim()
+                .parse::<u32>()
+                .map_err(|_| SlotdError::from(format!("invalid GPU id list: {value}")))
+        })
+        .collect()
+}
+
+fn partition_state(
+    partition: &str,
+    allocated_cpus: u32,
+    allocated_gpus: u32,
+    total_cpus: u32,
+    total_gpus: u32,
+) -> String {
+    if partition == "gpu" {
+        if allocated_gpus == 0 {
+            "idle".to_string()
+        } else if allocated_gpus >= total_gpus {
+            "alloc".to_string()
+        } else {
+            "mix".to_string()
+        }
+    } else if allocated_cpus == 0 {
+        "idle".to_string()
+    } else if allocated_cpus >= total_cpus {
+        "alloc".to_string()
+    } else {
+        "mix".to_string()
+    }
+}
+
+fn partition_gres_used(
+    partition: &str,
+    gpu_model: &str,
+    total_gpus: u32,
+    ids: &[u32],
+) -> String {
+    if partition != "gpu" {
+        return "N/A".to_string();
+    }
+
+    let idx = if ids.is_empty() {
+        "IDX:N/A".to_string()
+    } else {
+        format!(
+            "IDX:{}",
+            ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+        )
+    };
+
+    format!("gpu:{gpu_model}:{total_gpus}({idx})")
+}
+
+fn filter_jobs(
+    jobs: Vec<JobRecord>,
+    states: Option<&[JobState]>,
+    ids: Option<&[i64]>,
+) -> Vec<JobRecord> {
+    jobs.into_iter()
+        .filter(|job| {
+            let state_ok = states
+                .map(|states| states.contains(&job.state))
+                .unwrap_or(true);
+            let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
+            state_ok && id_ok
+        })
+        .collect()
 }

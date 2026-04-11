@@ -70,8 +70,11 @@ fn handle_stream(
             Response::Submitted { job_id }
         }
         Request::SubmitRun { request, immediate } => submit_run(store, runner, request, immediate)?,
-        Request::ListJobs => Response::Jobs {
-            jobs: store.list_jobs()?,
+        Request::ListJobs { states } => Response::Jobs {
+            jobs: store.list_jobs(states.as_deref())?,
+        },
+        Request::ListAccountingJobs { states, ids } => Response::Jobs {
+            jobs: store.list_accounting_jobs(states.as_deref(), ids.as_deref())?,
         },
         Request::Cancel { job_id } => {
             if runner.cancel(config, store, job_id)? {

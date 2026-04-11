@@ -1,40 +1,53 @@
-use crate::job::{JobRecord, NodeInfo};
+use std::time::{SystemTime, UNIX_EPOCH};
 
-pub fn print_jobs(jobs: &[JobRecord]) {
-    println!(
-        "{:<8} {:<18} {:<6} {:<4} {:>4} {:>8} {:>4} {:<19} COMMAND",
-        "JOBID", "NAME", "PART", "ST", "CPU", "MEM", "GPU", "SUBMIT_TIME"
-    );
+use crate::config::AppConfig;
+use crate::job::{JobRecord, JobState, NodeInfo};
+
+pub fn print_squeue_jobs(config: &AppConfig, jobs: &[JobRecord]) {
+    println!("JOBID | PARTITION |       NAME |         USER | ST |        TIME | NODELIST(REASON)");
     for job in jobs {
         println!(
-            "{:<8} {:<18} {:<6} {:<4} {:>4} {:>8} {:>4} {:<19} {}",
+            "{:>5} | {:>9} | {:>10} | {:>12} | {:>2} | {:>11} | {}",
             job.id,
-            truncate(&job.name, 18),
-            truncate(&job.partition, 6),
+            truncate(&job.partition, 9),
+            truncate(&job.name, 10),
+            truncate(&job.user_name, 12),
             job.state.short_code(),
-            job.requested_cpus,
-            format!("{}M", job.requested_memory_mb),
-            job.requested_gpus,
-            format_timestamp(job.submit_time),
-            truncate(&job.command, 40),
+            format_elapsed(job),
+            squeue_nodelist_reason(config, job),
         );
     }
 }
 
-pub fn print_node_info(info: &NodeInfo) {
-    println!("PARTITION CPUS   CPU_USED   MEM_MB   MEM_USED   GPUS   GPU_USED   RUNNING   PENDING");
-    for partition in &info.partitions {
+pub fn print_sacct_jobs(jobs: &[JobRecord]) {
+    println!("JOBID | PARTITION |       NAME |         USER |      STATE | EXITCODE");
+    for job in jobs {
         println!(
-            "{:<9} {:>5} {:>10} {:>8} {:>10} {:>6} {:>10} {:>8} {:>8}",
-            partition.name,
-            partition.total_cpus,
-            partition.allocated_cpus,
-            partition.total_memory_mb,
-            partition.allocated_memory_mb,
-            partition.total_gpus,
-            partition.allocated_gpus,
-            partition.running_jobs,
-            partition.pending_jobs,
+            "{:>5} | {:>9} | {:>10} | {:>12} | {:>10} | {}",
+            job.id,
+            truncate(&job.partition, 9),
+            truncate(&job.name, 10),
+            truncate(&job.user_name, 12),
+            truncate(job.state.as_str(), 10),
+            format_exit_code(job),
+        );
+    }
+}
+
+pub fn print_sinfo(info: &NodeInfo) {
+    println!(" PARTITION |           HOSTNAMES | STATE |                        GRES_USED");
+    for partition in &info.partitions {
+        let partition_name = if partition.name == "gpu" {
+            "gpu*".to_string()
+        } else {
+            partition.name.clone()
+        };
+        println!(
+            "{:>10} | {:>19} | {:>5} | {:>32}",
+            truncate(&partition_name, 10),
+            truncate(&partition.hostname, 19),
+            partition.state,
+            truncate(&partition.gres_used, 32),
         );
     }
 }
@@ -47,10 +60,59 @@ fn truncate(value: &str, width: usize) -> String {
         .chars()
         .take(width.saturating_sub(1))
         .collect::<String>();
-    output.push('~');
+    output.push('-');
     output
 }
 
-fn format_timestamp(timestamp: i64) -> String {
-    format!("{timestamp}")
+fn format_elapsed(job: &JobRecord) -> String {
+    let now = now_ts();
+    let seconds = match job.state {
+        JobState::Pending => 0,
+        JobState::Running => job
+            .start_time
+            .map(|start| now.saturating_sub(start))
+            .unwrap_or(0),
+        _ => match (job.start_time, job.end_time) {
+            (Some(start), Some(end)) => end.saturating_sub(start),
+            _ => 0,
+        },
+    };
+    format_duration(seconds)
+}
+
+fn format_duration(seconds: i64) -> String {
+    let total = seconds.max(0) as u64;
+    let days = total / 86_400;
+    let rem = total % 86_400;
+    let hours = rem / 3_600;
+    let minutes = (rem % 3_600) / 60;
+    let secs = rem % 60;
+
+    if days > 0 {
+        format!("{days}-{hours:02}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{hours}:{minutes:02}:{secs:02}")
+    }
+}
+
+fn squeue_nodelist_reason(config: &AppConfig, job: &JobRecord) -> String {
+    match job.state {
+        JobState::Pending => "(Resources)".to_string(),
+        JobState::Running => config.hostname.clone(),
+        JobState::Cancelled => "(Cancelled)".to_string(),
+        JobState::Failed => "(Failed)".to_string(),
+        JobState::Completed => config.hostname.clone(),
+    }
+}
+
+fn format_exit_code(job: &JobRecord) -> String {
+    let exit = job.exit_code.unwrap_or(0);
+    format!("{exit}:0")
+}
+
+fn now_ts() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }

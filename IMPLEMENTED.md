@@ -25,6 +25,7 @@ The current binary supports these subcommands:
 - `slotd sbatch <script>`
 - `slotd srun [options] -- <command...>`
 - `slotd squeue`
+- `slotd sacct`
 - `slotd scancel <job_id>`
 - `slotd sinfo`
 
@@ -33,6 +34,7 @@ The CLI also supports Slurm-like command aliases through `argv[0]` dispatch for:
 - `sbatch`
 - `srun`
 - `squeue`
+- `sacct`
 - `scancel`
 - `sinfo`
 
@@ -57,6 +59,10 @@ The root directory can be changed with the `SLOTD_ROOT` environment variable.
 GPU capacity can be configured with:
 
 - `SLOTD_GPU_COUNT`
+- `SLOTD_GPU_MODEL`
+
+When available, `slotd` also attempts to detect GPU count and GPU model from
+`nvidia-smi` during startup.
 
 ## Implemented Job Lifecycle
 
@@ -116,13 +122,18 @@ Implemented behavior:
 - `srun --partition` selects `cpu` or `gpu`
 - `srun --gpus` sets requested GPU slots
 - `sinfo` reports total and allocated reserved resources
+- `sinfo` marks the default partition with `*`
+- `sinfo` shows `N/A` for CPU-partition `GRES_USED`
 - jobs are admitted only if requested resources fit within remaining reserved capacity
 
 Partition behavior:
 
 - `cpu` jobs must request `0` GPUs
 - `gpu` jobs can request GPU slots
+- `gpu` is the default partition
 - if `gpu` is selected without an explicit GPU count, the default is `1`
+- when a `gpu` job starts, specific GPU IDs are assigned from the free pool
+- assigned GPU IDs are exported through `CUDA_VISIBLE_DEVICES`
 
 Not implemented yet:
 
@@ -229,6 +240,7 @@ The `jobs` table currently stores:
 
 - job ID
 - job name
+- user name
 - state
 - partition
 - command string
@@ -236,6 +248,7 @@ The `jobs` table currently stores:
 - requested CPUs
 - requested memory
 - requested GPUs
+- assigned GPU IDs
 - submit, start, and end timestamps
 - PID and PGID
 - exit code
@@ -255,7 +268,8 @@ Implemented request types:
 
 - submit batch job
 - submit command job
-- list jobs
+- list jobs for queue display
+- list jobs for accounting display
 - cancel job
 - query node info
 
@@ -271,29 +285,52 @@ Implemented response types:
 
 ### `squeue`
 
+Current behavior:
+
+- by default only active jobs are shown
+- `--all` shows historical jobs as well
+- `--states` filters by requested states
+
 Current columns:
 
 - `JOBID`
+- `PARTITIO`
 - `NAME`
-- `PART`
+- `USER`
 - `ST`
-- `CPU`
-- `MEM`
-- `GPU`
-- `SUBMIT_TIME`
-- `COMMAND`
+- `TIME`
+- `NODELIST(REASON)`
 
 Notes:
 
-- the state is shown using short codes such as `PD`, `R`, `CD`, `F`, `CA`
-- timestamps are currently shown as raw Unix epoch seconds
-- long strings are truncated to fixed widths
+- the default intent now matches Slurm more closely than the earlier implementation
+- state uses short codes such as `PD`, `R`, `CD`, `F`, `CA`
+
+### `sacct`
+
+Current behavior:
+
+- used to inspect current and historical jobs
+- `-j/--jobs` filters by job ID
+- `-s/--state` filters by job state
+
+Current columns:
+
+- `JobID`
+- `Partition`
+- `JobName`
+- `User`
+- `State`
+- `ExitCode`
 
 ### `sinfo`
 
 Current fields:
 
 - partition name
+- hostname
+- partition state
+- GRES-style GPU usage string
 - total CPUs
 - allocated CPUs
 - total memory in MB
@@ -336,10 +373,9 @@ paths by default rather than `/run/slotd` and `/var/lib/slotd`.
 
 The following planned features are not implemented yet:
 
-- `srun`
+- full Slurm-like `squeue` and `sacct` option coverage
 - structured config file
 - `--json` output
-- richer queue formatting
 - cgroup v2 resource enforcement
 - multi-job fairness or priority scheduling
 - systemd-managed installation flow

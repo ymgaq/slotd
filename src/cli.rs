@@ -8,8 +8,8 @@ use crate::config::AppConfig;
 use crate::daemon;
 use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
-use crate::job::SubmitRequest;
-use crate::output::{print_jobs, print_node_info};
+use crate::job::{JobState, SubmitRequest};
+use crate::output::{print_sacct_jobs, print_sinfo, print_squeue_jobs};
 use crate::sbatch::{parse_directives, parse_mem_mb};
 
 #[derive(Debug, Parser)]
@@ -25,7 +25,8 @@ enum Commands {
     Daemon,
     Sbatch(SbatchArgs),
     Srun(SrunArgs),
-    Squeue,
+    Squeue(SqueueArgs),
+    Sacct(SacctArgs),
     Scancel(ScancelArgs),
     Sinfo,
 }
@@ -52,6 +53,22 @@ pub struct SbatchArgs {
 #[derive(Debug, Args)]
 pub struct ScancelArgs {
     job_id: i64,
+}
+
+#[derive(Debug, Args)]
+pub struct SqueueArgs {
+    #[arg(long)]
+    all: bool,
+    #[arg(long, value_delimiter = ',')]
+    states: Option<Vec<String>>,
+}
+
+#[derive(Debug, Args)]
+pub struct SacctArgs {
+    #[arg(short = 'j', long = "jobs", value_delimiter = ',')]
+    jobs: Option<Vec<i64>>,
+    #[arg(short = 's', long = "state", value_delimiter = ',')]
+    states: Option<Vec<String>>,
 }
 
 #[derive(Debug, Args)]
@@ -83,7 +100,8 @@ impl Cli {
             Commands::Daemon => daemon::run(config),
             Commands::Sbatch(args) => run_sbatch(config, args),
             Commands::Srun(args) => run_srun(config, args),
-            Commands::Squeue => run_squeue(config),
+            Commands::Squeue(args) => run_squeue(config, args),
+            Commands::Sacct(args) => run_sacct(config, args),
             Commands::Scancel(args) => run_scancel(config, args),
             Commands::Sinfo => run_sinfo(config),
         }
@@ -105,6 +123,7 @@ pub fn dispatch_argv0(mut argv: Vec<OsString>) -> Vec<OsString> {
         "sbatch" => Some("sbatch"),
         "srun" => Some("srun"),
         "squeue" => Some("squeue"),
+        "sacct" => Some("sacct"),
         "scancel" => Some("scancel"),
         "sinfo" => Some("sinfo"),
         _ => None,
@@ -145,6 +164,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
 
     let request = SubmitRequest {
         name: args.job_name.or(directives.job_name),
+        user_name: current_user_name(),
         partition,
         cwd,
         script_name,
@@ -201,6 +221,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
 
     let request = SubmitRequest {
         name: args.job_name.or_else(|| Some(command_name.clone())),
+        user_name: current_user_name(),
         partition,
         cwd,
         script_name: command_name,
@@ -231,10 +252,40 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
     }
 }
 
-fn run_squeue(config: AppConfig) -> Result<()> {
-    match send_request(&config, &Request::ListJobs)? {
+fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
+    let state_filter = if let Some(values) = args.states {
+        Some(parse_states(values)?)
+    } else if args.all {
+        None
+    } else {
+        Some(vec![JobState::Pending, JobState::Running])
+    };
+
+    match send_request(&config, &Request::ListJobs { states: None })? {
         Response::Jobs { jobs } => {
-            print_jobs(&jobs);
+            let jobs = filter_jobs(jobs, state_filter.as_deref(), None);
+            print_squeue_jobs(&config, &jobs);
+            Ok(())
+        }
+        Response::Error { message } => Err(SlotdError::from(message)),
+        other => Err(SlotdError::from(format!(
+            "unexpected response to squeue: {other:?}"
+        ))),
+    }
+}
+
+fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
+    let state_filter = args.states.map(parse_states).transpose()?;
+    match send_request(
+        &config,
+        &Request::ListAccountingJobs {
+            states: None,
+            ids: args.jobs,
+        },
+    )? {
+        Response::Jobs { jobs } => {
+            let jobs = filter_jobs(jobs, state_filter.as_deref(), None);
+            print_sacct_jobs(&jobs);
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -265,7 +316,7 @@ fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
 fn run_sinfo(config: AppConfig) -> Result<()> {
     match send_request(&config, &Request::NodeInfo)? {
         Response::NodeInfo { info } => {
-            print_node_info(&info);
+            print_sinfo(&info);
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -303,4 +354,43 @@ fn command_basename(command: &str) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("srun")
         .to_string()
+}
+
+fn current_user_name() -> String {
+    std::env::var("USER").unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
+    values
+        .into_iter()
+        .map(|value| parse_state(&value))
+        .collect()
+}
+
+fn parse_state(value: &str) -> Result<JobState> {
+    let normalized = value.trim().to_ascii_uppercase();
+    match normalized.as_str() {
+        "PD" | "PENDING" => Ok(JobState::Pending),
+        "R" | "RUNNING" => Ok(JobState::Running),
+        "CD" | "COMPLETED" => Ok(JobState::Completed),
+        "F" | "FAILED" => Ok(JobState::Failed),
+        "CA" | "CANCELLED" => Ok(JobState::Cancelled),
+        _ => Err(SlotdError::from(format!("unknown state: {value}"))),
+    }
+}
+
+fn filter_jobs(
+    jobs: Vec<crate::job::JobRecord>,
+    states: Option<&[JobState]>,
+    ids: Option<&[i64]>,
+) -> Vec<crate::job::JobRecord> {
+    jobs.into_iter()
+        .filter(|job| {
+            let state_ok = states
+                .map(|states| states.contains(&job.state))
+                .unwrap_or(true);
+            let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
+            state_ok && id_ok
+        })
+        .collect()
 }

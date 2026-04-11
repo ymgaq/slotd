@@ -38,6 +38,11 @@ impl Runner {
     pub fn launch(&mut self, store: &Store, job: &JobRecord) -> Result<()> {
         let stdout = File::create(&job.stdout_path)?;
         let stderr = File::create(&job.stderr_path)?;
+        let assigned_gpu_ids = if job.partition == "gpu" {
+            store.allocate_gpu_ids(job.requested_gpus)?
+        } else {
+            Vec::new()
+        };
 
         let mut command = Command::new("/bin/bash");
         command.arg(&job.script_path);
@@ -45,6 +50,9 @@ impl Runner {
         command.stdin(Stdio::null());
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
+        if !assigned_gpu_ids.is_empty() {
+            command.env("CUDA_VISIBLE_DEVICES", join_gpu_ids(&assigned_gpu_ids));
+        }
         // Create a dedicated process group so scancel can terminate the whole tree.
         unsafe {
             command.pre_exec(|| {
@@ -56,7 +64,7 @@ impl Runner {
         let child = command.spawn()?;
         let pid = child.id() as i32;
         let pgid = pid;
-        store.mark_running(job.id, pid, pgid)?;
+        store.mark_running(job.id, pid, pgid, &assigned_gpu_ids)?;
 
         self.jobs.insert(
             job.id,
@@ -204,4 +212,8 @@ fn wait_for_group_exit(pgid: i32, timeout_secs: u64) -> Result<()> {
 
 pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {
     process_group_alive(pgid)
+}
+
+fn join_gpu_ids(ids: &[u32]) -> String {
+    ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
 }

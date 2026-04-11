@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::AppConfig;
 use crate::error::{Result, SlotdError};
-use crate::job::{JobRecord, NodeInfo, SubmitRequest};
+use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {
@@ -14,7 +14,13 @@ pub enum Request {
         request: SubmitRequest,
         immediate: bool,
     },
-    ListJobs,
+    ListJobs {
+        states: Option<Vec<JobState>>,
+    },
+    ListAccountingJobs {
+        states: Option<Vec<JobState>>,
+        ids: Option<Vec<i64>>,
+    },
     Cancel {
         job_id: i64,
     },

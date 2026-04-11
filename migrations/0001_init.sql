@@ -1,8 +1,9 @@
 CREATE TABLE IF NOT EXISTS jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
+    user_name TEXT NOT NULL DEFAULT 'unknown',
     state TEXT NOT NULL,
-    partition TEXT NOT NULL DEFAULT 'cpu',
+    partition TEXT NOT NULL DEFAULT 'gpu',
     command TEXT NOT NULL,
     cwd TEXT NOT NULL,
     requested_cpus INTEGER NOT NULL,
@@ -14,6 +15,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     pid INTEGER,
     pgid INTEGER,
     exit_code INTEGER,
+    assigned_gpus TEXT NOT NULL DEFAULT '',
     script_path TEXT NOT NULL DEFAULT '',
     stdout_path TEXT NOT NULL DEFAULT '',
     stderr_path TEXT NOT NULL DEFAULT ''

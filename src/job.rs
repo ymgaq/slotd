@@ -51,6 +51,7 @@ impl std::str::FromStr for JobState {
 pub struct JobRecord {
     pub id: i64,
     pub name: String,
+    pub user_name: String,
     pub state: JobState,
     pub partition: String,
     pub command: String,
@@ -64,6 +65,7 @@ pub struct JobRecord {
     pub pid: Option<i32>,
     pub pgid: Option<i32>,
     pub exit_code: Option<i32>,
+    pub assigned_gpu_ids: Vec<u32>,
     pub script_path: String,
     pub stdout_path: String,
     pub stderr_path: String,
@@ -72,6 +74,7 @@ pub struct JobRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubmitRequest {
     pub name: Option<String>,
+    pub user_name: String,
     pub partition: String,
     pub cwd: String,
     pub script_name: String,
@@ -92,6 +95,9 @@ pub struct NodeInfo {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartitionInfo {
     pub name: String,
+    pub hostname: String,
+    pub state: String,
+    pub gres_used: String,
     pub total_cpus: u32,
     pub total_memory_mb: u64,
     pub total_gpus: u32,
