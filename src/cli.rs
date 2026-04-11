@@ -33,6 +33,7 @@ enum Commands {
     Sbatch(SbatchArgs),
     Srun(SrunArgs),
     Salloc(SallocArgs),
+    Scontrol(ScontrolArgs),
     Squeue(SqueueArgs),
     Sacct(SacctArgs),
     Scancel(ScancelArgs),
@@ -65,10 +66,21 @@ pub struct SbatchArgs {
     error: Option<PathBuf>,
     #[arg(long, short = 'D')]
     chdir: Option<PathBuf>,
+    #[arg(long, short = 'd')]
+    dependency: Option<String>,
+    #[arg(long, short = 'a')]
+    array: Option<String>,
     #[arg(long)]
     parsable: bool,
     #[arg(long, short = 'W')]
     wait: bool,
+}
+
+#[derive(Debug, Args)]
+pub struct ScontrolArgs {
+    action: String,
+    entity: String,
+    job_id: i64,
 }
 
 #[derive(Debug, Args)]
@@ -186,6 +198,7 @@ impl Cli {
             Commands::Sbatch(args) => run_sbatch(config, args),
             Commands::Srun(args) => run_srun(config, args),
             Commands::Salloc(args) => run_salloc(config, args),
+            Commands::Scontrol(args) => run_scontrol(config, args),
             Commands::Squeue(args) => run_squeue(config, args),
             Commands::Sacct(args) => run_sacct(config, args),
             Commands::Scancel(args) => run_scancel(config, args),
@@ -209,6 +222,7 @@ pub fn dispatch_argv0(mut argv: Vec<OsString>) -> Vec<OsString> {
         "sbatch" => Some("sbatch"),
         "srun" => Some("srun"),
         "salloc" => Some("salloc"),
+        "scontrol" => Some("scontrol"),
         "squeue" => Some("squeue"),
         "sacct" => Some("sacct"),
         "scancel" => Some("scancel"),
@@ -287,6 +301,8 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         requested_memory_mb,
         requested_gpus,
         allocation_only: false,
+        dependency: args.dependency.or(directives.dependency),
+        array_spec: args.array.or(directives.array_spec),
         time_limit_secs,
         stdout_path: args
             .output
@@ -306,11 +322,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
                 println!("Submitted batch job {job_id}");
             }
             if args.wait {
-                let job = wait_for_job_completion(&config, job_id)?;
-                match job.state {
-                    JobState::Completed => Ok(()),
-                    _ => Err(SlotdError::Exit(job.exit_code.unwrap_or(1))),
-                }
+                wait_for_submission_completion(&config, job_id)
             } else {
                 Ok(())
             }
@@ -369,9 +381,17 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         requested_memory_mb,
         requested_gpus,
         allocation_only: false,
+        dependency: None,
+        array_spec: None,
         time_limit_secs,
-        stdout_path: args.output.clone().map(|path| path.to_string_lossy().to_string()),
-        stderr_path: args.error.clone().map(|path| path.to_string_lossy().to_string()),
+        stdout_path: args
+            .output
+            .clone()
+            .map(|path| path.to_string_lossy().to_string()),
+        stderr_path: args
+            .error
+            .clone()
+            .map(|path| path.to_string_lossy().to_string()),
     };
 
     let job_id = match send_request(
@@ -386,7 +406,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         other => {
             return Err(SlotdError::from(format!(
                 "unexpected response to srun: {other:?}"
-            )))
+            )));
         }
     };
 
@@ -453,6 +473,8 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         requested_memory_mb,
         requested_gpus,
         allocation_only: true,
+        dependency: None,
+        array_spec: None,
         time_limit_secs,
         stdout_path: None,
         stderr_path: None,
@@ -470,7 +492,7 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         other => {
             return Err(SlotdError::from(format!(
                 "unexpected response to salloc: {other:?}"
-            )))
+            )));
         }
     };
 
@@ -509,6 +531,33 @@ fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
     }
 }
 
+fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
+    if !args.action.eq_ignore_ascii_case("show") || !args.entity.eq_ignore_ascii_case("job") {
+        return Err(SlotdError::from(
+            "supported syntax: scontrol show job <job_id>",
+        ));
+    }
+
+    match send_request(
+        &config,
+        &Request::GetJob {
+            job_id: args.job_id,
+        },
+    )? {
+        Response::Job { job: Some(job) } => {
+            print_scontrol_job(&config, &job);
+            Ok(())
+        }
+        Response::Job { job: None } => {
+            Err(SlotdError::from(format!("job {} not found", args.job_id)))
+        }
+        Response::Error { message } => Err(SlotdError::from(message)),
+        other => Err(SlotdError::from(format!(
+            "unexpected response to scontrol: {other:?}"
+        ))),
+    }
+}
+
 fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
     let state_filter = args.states.map(parse_states).transpose()?;
     let fields = parse_sacct_fields(args.format.as_deref()).map_err(SlotdError::from)?;
@@ -517,7 +566,11 @@ fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
         .as_deref()
         .map(parse_time_filter)
         .transpose()?;
-    let end_time = args.end_time.as_deref().map(parse_time_filter).transpose()?;
+    let end_time = args
+        .end_time
+        .as_deref()
+        .map(parse_time_filter)
+        .transpose()?;
 
     match send_request(
         &config,
@@ -531,7 +584,7 @@ fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
         },
     )? {
         Response::Jobs { jobs } => {
-            print_sacct_jobs(&jobs, &fields, args.noheader);
+            print_sacct_jobs(&config, &jobs, &fields, args.noheader);
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -580,16 +633,64 @@ fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord>
             Response::Job { job: Some(job) } if job.state.is_terminal() => return Ok(job),
             Response::Job { job: Some(_) } => thread::sleep(Duration::from_millis(200)),
             Response::Job { job: None } => {
-                return Err(SlotdError::from(format!("job {job_id} disappeared")))
+                return Err(SlotdError::from(format!("job {job_id} disappeared")));
             }
             Response::Error { message } => return Err(SlotdError::from(message)),
             other => {
                 return Err(SlotdError::from(format!(
                     "unexpected response while waiting for job {job_id}: {other:?}"
-                )))
+                )));
             }
         }
     }
+}
+
+fn wait_for_submission_completion(config: &AppConfig, job_id: i64) -> Result<()> {
+    let job = wait_for_job_completion(config, job_id)?;
+    let mut jobs = vec![job.clone()];
+
+    if job.array_job_id == Some(job.id) && job.array_task_count.unwrap_or(1) > 1 {
+        loop {
+            match send_request(
+                config,
+                &Request::ListAccountingJobs {
+                    states: None,
+                    ids: None,
+                    user_name: None,
+                    partitions: None,
+                    start_time: None,
+                    end_time: None,
+                },
+            )? {
+                Response::Jobs { jobs: all_jobs } => {
+                    jobs = all_jobs
+                        .into_iter()
+                        .filter(|entry| entry.array_job_id == Some(job.id))
+                        .collect();
+                    if jobs.len() as u32 >= job.array_task_count.unwrap_or(0)
+                        && jobs.iter().all(|entry| entry.state.is_terminal())
+                    {
+                        break;
+                    }
+                }
+                Response::Error { message } => return Err(SlotdError::from(message)),
+                other => {
+                    return Err(SlotdError::from(format!(
+                        "unexpected response while waiting for array job {job_id}: {other:?}"
+                    )));
+                }
+            }
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    let failing_job = jobs
+        .into_iter()
+        .find(|entry| entry.state != JobState::Completed);
+    if let Some(job) = failing_job {
+        return Err(SlotdError::Exit(job.exit_code.unwrap_or(1)));
+    }
+    Ok(())
 }
 
 fn wait_for_job_running(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
@@ -600,23 +701,27 @@ fn wait_for_job_running(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
                 return Err(SlotdError::from(format!(
                     "allocation {job_id} ended before it became runnable: {}",
                     job.state.as_str()
-                )))
+                )));
             }
             Response::Job { job: Some(_) } => thread::sleep(Duration::from_millis(200)),
             Response::Job { job: None } => {
-                return Err(SlotdError::from(format!("allocation {job_id} disappeared")))
+                return Err(SlotdError::from(format!("allocation {job_id} disappeared")));
             }
             Response::Error { message } => return Err(SlotdError::from(message)),
             other => {
                 return Err(SlotdError::from(format!(
                     "unexpected response while waiting for allocation {job_id}: {other:?}"
-                )))
+                )));
             }
         }
     }
 }
 
-fn run_foreground_allocation(config: &AppConfig, job: &JobRecord, command: &[String]) -> Result<()> {
+fn run_foreground_allocation(
+    config: &AppConfig,
+    job: &JobRecord,
+    command: &[String],
+) -> Result<()> {
     let mut child = Command::new(&command[0]);
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
@@ -647,7 +752,7 @@ fn run_foreground_allocation(config: &AppConfig, job: &JobRecord, command: &[Str
             return Err(SlotdError::from(format!(
                 "unexpected response while adopting allocation {}: {other:?}",
                 job.id
-            )))
+            )));
         }
     }
 
@@ -671,7 +776,7 @@ fn run_foreground_allocation(config: &AppConfig, job: &JobRecord, command: &[Str
             return Err(SlotdError::from(format!(
                 "unexpected response while finishing allocation {}: {other:?}",
                 job.id
-            )))
+            )));
         }
     }
 
@@ -705,6 +810,71 @@ fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     command.env("SLURM_SUBMIT_DIR", &job.cwd);
     command.env("SLURM_NTASKS", job.requested_tasks.to_string());
     command.env("SLURM_CPUS_PER_TASK", job.requested_cpus.to_string());
+    if let Some(array_job_id) = job.array_job_id {
+        command.env("SLURM_ARRAY_JOB_ID", array_job_id.to_string());
+    }
+    if let Some(array_task_id) = job.array_task_id {
+        command.env("SLURM_ARRAY_TASK_ID", array_task_id.to_string());
+    }
+}
+
+fn print_scontrol_job(config: &AppConfig, job: &JobRecord) {
+    let dependency = job.dependency.as_deref().unwrap_or("(null)");
+    let reason = job.state_reason.as_deref().unwrap_or("(null)");
+    let stdout = if job.stdout_path.is_empty() {
+        "(null)"
+    } else {
+        &job.stdout_path
+    };
+    let stderr = if job.stderr_path.is_empty() {
+        "(null)"
+    } else {
+        &job.stderr_path
+    };
+    let node_list = if matches!(job.state, JobState::Pending) {
+        "(null)".to_string()
+    } else {
+        config.hostname.clone()
+    };
+    let time_limit = job
+        .time_limit_secs
+        .map(|value| format_duration_secs(value as i64))
+        .unwrap_or_else(|| "UNLIMITED".to_string());
+    let array = match (job.array_job_id, job.array_task_id) {
+        (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
+        _ => "(null)".to_string(),
+    };
+    println!(
+        "JobId={} JobName={} UserId={}({}) Partition={} State={} Reason={}",
+        job.id,
+        job.name,
+        job.user_name,
+        job.user_name,
+        job.partition,
+        job.state.as_str(),
+        reason
+    );
+    println!(
+        "   NumTasks={} CPUs/Task={} ReqMem={}MB ReqGRES=gpu:{} TimeLimit={} Dependency={}",
+        job.requested_tasks,
+        job.requested_cpus,
+        job.requested_memory_mb,
+        job.requested_gpus,
+        time_limit,
+        dependency
+    );
+    println!(
+        "   SubmitTime={} StartTime={} EndTime={} ExitCode={} ArrayTask={}",
+        format_timestamp(job.submit_time),
+        format_optional_timestamp(job.start_time),
+        format_optional_timestamp(job.end_time),
+        format_exit_status(job),
+        array
+    );
+    println!(
+        "   WorkDir={} Command={} StdOut={} StdErr={} NodeList={}",
+        job.cwd, job.command, stdout, stderr, node_list
+    );
 }
 
 fn shell_join(args: &[String]) -> String {
@@ -872,8 +1042,7 @@ fn datetime_to_epoch(
         return Err(SlotdError::from("invalid date or time"));
     }
 
-    let days = days_from_civil(year, month, day)
-        .ok_or_else(|| SlotdError::from("invalid date"))?;
+    let days = days_from_civil(year, month, day).ok_or_else(|| SlotdError::from("invalid date"))?;
     Ok(days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64)
 }
 
@@ -908,11 +1077,68 @@ fn is_leap_year(year: i32) -> bool {
     (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
 }
 
+fn format_exit_status(job: &JobRecord) -> String {
+    format!(
+        "{}:{}",
+        job.exit_code.unwrap_or(0),
+        job.term_signal.unwrap_or(0)
+    )
+}
+
+fn format_optional_timestamp(value: Option<i64>) -> String {
+    value
+        .map(format_timestamp)
+        .unwrap_or_else(|| "Unknown".to_string())
+}
+
+fn format_timestamp(value: i64) -> String {
+    let (year, month, day, hour, minute, second) = civil_from_epoch(value);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
+}
+
+fn civil_from_epoch(timestamp: i64) -> (i32, u32, u32, u32, u32, u32) {
+    let days = timestamp.div_euclid(86_400);
+    let secs = timestamp.rem_euclid(86_400) as u32;
+    let (year, month, day) = civil_from_days(days);
+    let hour = secs / 3_600;
+    let minute = (secs % 3_600) / 60;
+    let second = secs % 60;
+    (year, month, day, hour, minute, second)
+}
+
+fn civil_from_days(days: i64) -> (i32, u32, u32) {
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year as i32, month as u32, day as u32)
+}
+
+fn format_duration_secs(seconds: i64) -> String {
+    let seconds = seconds.max(0) as u64;
+    let days = seconds / 86_400;
+    let rem = seconds % 86_400;
+    let hours = rem / 3_600;
+    let minutes = (rem % 3_600) / 60;
+    let secs = rem % 60;
+    if days > 0 {
+        format!("{days}-{hours:02}:{minutes:02}:{secs:02}")
+    } else {
+        format!("{hours:02}:{minutes:02}:{secs:02}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::ffi::OsString;
 
-    use super::{dispatch_argv0, parse_time_filter};
+    use super::{dispatch_argv0, format_duration_secs, format_timestamp, parse_time_filter};
 
     #[test]
     fn argv0_dispatch_inserts_slurm_alias() {
@@ -933,5 +1159,11 @@ mod tests {
             parse_time_filter("1970-01-02T03:04:05").expect("parse datetime"),
             97_445
         );
+    }
+
+    #[test]
+    fn formats_timestamp_and_duration() {
+        assert_eq!(format_timestamp(97_445), "1970-01-02T03:04:05");
+        assert_eq!(format_duration_secs(3_661), "01:01:01");
     }
 }

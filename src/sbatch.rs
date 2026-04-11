@@ -11,9 +11,17 @@ pub struct BatchDirectives {
     pub mem_mb: Option<u64>,
     pub gpus: Option<u32>,
     pub time_limit_secs: Option<u64>,
+    pub dependency: Option<String>,
+    pub array_spec: Option<String>,
     pub output_path: Option<String>,
     pub error_path: Option<String>,
     pub chdir: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArraySpec {
+    pub task_ids: Vec<i32>,
+    pub limit: Option<u32>,
 }
 
 pub fn parse_directives(script_body: &str) -> Result<BatchDirectives> {
@@ -58,6 +66,8 @@ pub fn expand_output_pattern(
     job_name: &str,
     user_name: &str,
     hostname: &str,
+    array_job_id: Option<i64>,
+    array_task_id: Option<i32>,
 ) -> String {
     let mut output = String::new();
     let mut chars = pattern.chars();
@@ -70,6 +80,12 @@ pub fn expand_output_pattern(
         match chars.next() {
             Some('%') => output.push('%'),
             Some('j') => output.push_str(&job_id.to_string()),
+            Some('A') => output.push_str(&array_job_id.unwrap_or(job_id).to_string()),
+            Some('a') => output.push_str(
+                &array_task_id
+                    .map(|value| value.to_string())
+                    .unwrap_or_else(|| "4294967294".to_string()),
+            ),
             Some('x') => output.push_str(job_name),
             Some('u') => output.push_str(user_name),
             Some('N') => output.push_str(hostname),
@@ -85,6 +101,41 @@ pub fn expand_output_pattern(
 
 pub fn default_batch_output_pattern() -> &'static str {
     "slurm-%j.out"
+}
+
+pub fn parse_array_spec(value: &str) -> Result<ArraySpec> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(SlotdError::from("array specification cannot be empty"));
+    }
+
+    let (range_expr, limit) = match trimmed.split_once('%') {
+        Some((expr, limit)) => (
+            expr.trim(),
+            Some(
+                limit
+                    .trim()
+                    .parse::<u32>()
+                    .map_err(|_| SlotdError::from(format!("invalid array limit: {trimmed}")))?,
+            ),
+        ),
+        None => (trimmed, None),
+    };
+
+    let mut task_ids = Vec::new();
+    for segment in range_expr.split(',') {
+        parse_array_segment(segment.trim(), &mut task_ids, trimmed)?;
+    }
+    task_ids.sort_unstable();
+    task_ids.dedup();
+
+    if task_ids.is_empty() {
+        return Err(SlotdError::from(format!(
+            "array specification produced no tasks: {trimmed}"
+        )));
+    }
+
+    Ok(ArraySpec { task_ids, limit })
 }
 
 pub fn parse_mem_mb(value: &str) -> Result<u64> {
@@ -211,6 +262,24 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if token == "--time" || token == "-t" {
             directives.time_limit_secs = Some(parse_time_limit_secs(require_value(token, next)?)?);
             2
+        } else if let Some(value) = token.strip_prefix("--dependency=") {
+            directives.dependency = Some(value.to_string());
+            1
+        } else if let Some(value) = token.strip_prefix("-d=") {
+            directives.dependency = Some(value.to_string());
+            1
+        } else if token == "--dependency" || token == "-d" {
+            directives.dependency = Some(require_value(token, next)?.to_string());
+            2
+        } else if let Some(value) = token.strip_prefix("--array=") {
+            directives.array_spec = Some(value.to_string());
+            1
+        } else if let Some(value) = token.strip_prefix("-a=") {
+            directives.array_spec = Some(value.to_string());
+            1
+        } else if token == "--array" || token == "-a" {
+            directives.array_spec = Some(require_value(token, next)?.to_string());
+            2
         } else if let Some(value) = token.strip_prefix("-G=") {
             directives.gpus = Some(parse_u32("-G", value)?);
             1
@@ -270,6 +339,51 @@ fn parse_time_component(value: &str, original: &str) -> Result<u64> {
         .map_err(|_| SlotdError::from(format!("invalid time limit: {original}")))
 }
 
+fn parse_array_segment(segment: &str, task_ids: &mut Vec<i32>, original: &str) -> Result<()> {
+    if segment.is_empty() {
+        return Err(SlotdError::from(format!(
+            "invalid array specification: {original}"
+        )));
+    }
+
+    let (range_part, step) = match segment.split_once(':') {
+        Some((range, step)) => (
+            range.trim(),
+            step.trim()
+                .parse::<i32>()
+                .map_err(|_| SlotdError::from(format!("invalid array step: {original}")))?,
+        ),
+        None => (segment, 1),
+    };
+
+    if step <= 0 {
+        return Err(SlotdError::from(format!("invalid array step: {original}")));
+    }
+
+    if let Some((start, end)) = range_part.split_once('-') {
+        let start = parse_array_task_id(start.trim(), original)?;
+        let end = parse_array_task_id(end.trim(), original)?;
+        if start > end {
+            return Err(SlotdError::from(format!("invalid array range: {original}")));
+        }
+        let mut current = start;
+        while current <= end {
+            task_ids.push(current);
+            current += step;
+        }
+    } else {
+        task_ids.push(parse_array_task_id(range_part.trim(), original)?);
+    }
+
+    Ok(())
+}
+
+fn parse_array_task_id(value: &str, original: &str) -> Result<i32> {
+    value
+        .parse::<i32>()
+        .map_err(|_| SlotdError::from(format!("invalid array task id in: {original}")))
+}
+
 fn split_tokens(input: &str) -> Vec<String> {
     input.split_whitespace().map(ToString::to_string).collect()
 }
@@ -277,7 +391,8 @@ fn split_tokens(input: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        default_batch_output_pattern, expand_output_pattern, parse_directives, parse_time_limit_secs,
+        ArraySpec, default_batch_output_pattern, expand_output_pattern, parse_array_spec,
+        parse_directives, parse_time_limit_secs,
     };
 
     #[test]
@@ -288,6 +403,8 @@ mod tests {
 #SBATCH -p gpu
 #SBATCH -c 4
 #SBATCH -n 3
+#SBATCH -d afterok:10
+#SBATCH -a 0-3%2
 #SBATCH -G 2
 #SBATCH -o logs/out.txt
 #SBATCH -e logs/err.txt
@@ -299,6 +416,8 @@ echo hi
         assert_eq!(directives.partition.as_deref(), Some("gpu"));
         assert_eq!(directives.cpus_per_task, Some(4));
         assert_eq!(directives.ntasks, Some(3));
+        assert_eq!(directives.dependency.as_deref(), Some("afterok:10"));
+        assert_eq!(directives.array_spec.as_deref(), Some("0-3%2"));
         assert_eq!(directives.gpus, Some(2));
         assert_eq!(directives.output_path.as_deref(), Some("logs/out.txt"));
         assert_eq!(directives.error_path.as_deref(), Some("logs/err.txt"));
@@ -319,8 +438,16 @@ echo start
 
     #[test]
     fn expands_common_output_pattern_tokens() {
-        let value = expand_output_pattern("logs/%x-%j-%%-%u-%N.out", 42, "demo", "alice", "node1");
-        assert_eq!(value, "logs/demo-42-%-alice-node1.out");
+        let value = expand_output_pattern(
+            "logs/%x-%j-%A-%a-%%-%u-%N.out",
+            42,
+            "demo",
+            "alice",
+            "node1",
+            Some(12),
+            Some(3),
+        );
+        assert_eq!(value, "logs/demo-42-12-3-%-alice-node1.out");
         assert_eq!(default_batch_output_pattern(), "slurm-%j.out");
     }
 
@@ -329,5 +456,17 @@ echo start
         assert_eq!(parse_time_limit_secs("90").expect("minutes"), 5_400);
         assert_eq!(parse_time_limit_secs("01:30:00").expect("hms"), 5_400);
         assert_eq!(parse_time_limit_secs("1-00:00:00").expect("days"), 86_400);
+    }
+
+    #[test]
+    fn parses_array_ranges_steps_and_limit() {
+        let spec = parse_array_spec("0-6:2,9%3").expect("array spec");
+        assert_eq!(
+            spec,
+            ArraySpec {
+                task_ids: vec![0, 2, 4, 6, 9],
+                limit: Some(3)
+            }
+        );
     }
 }

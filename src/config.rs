@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub total_memory_mb: u64,
     pub total_gpus: u32,
     pub gpu_model: String,
+    pub cgroup_base: Option<PathBuf>,
     cpu_partitions: Vec<String>,
     gpu_partitions: Vec<String>,
     default_partition: String,
@@ -62,6 +63,7 @@ impl AppConfig {
                 .ok()
                 .or(detected_gpus.model)
                 .unwrap_or_else(|| "Generic-GPU".to_string()),
+            cgroup_base: env::var_os("SLOTD_CGROUP_BASE").map(PathBuf::from),
             cpu_partitions,
             gpu_partitions,
             default_partition,
@@ -75,7 +77,9 @@ impl AppConfig {
     }
 
     pub fn has_partition(&self, partition: &str) -> bool {
-        self.active_partitions().iter().any(|name| name == partition)
+        self.active_partitions()
+            .iter()
+            .any(|name| name == partition)
     }
 
     pub fn default_partition(&self) -> &str {

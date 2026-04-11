@@ -6,7 +6,9 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::config::AppConfig;
 use crate::error::{Result, SlotdError};
 use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
-use crate::sbatch::{default_batch_output_pattern, expand_output_pattern, resolve_log_path};
+use crate::sbatch::{
+    default_batch_output_pattern, expand_output_pattern, parse_array_spec, resolve_log_path,
+};
 
 const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 
@@ -30,34 +32,95 @@ impl Store {
     }
 
     pub fn create_job(&self, request: SubmitRequest) -> Result<i64> {
-        let submit_time = now_ts();
-        let user_name = request.user_name.clone();
-        let resolved_name = request
+        if request.array_spec.is_some() {
+            return self.create_array_jobs(request);
+        }
+        self.create_job_entry(
+            &request,
+            None,
+            None,
+            None,
+            None,
+            request
+                .name
+                .clone()
+                .unwrap_or_else(|| default_name(&request.script_name)),
+        )
+    }
+
+    fn create_array_jobs(&self, request: SubmitRequest) -> Result<i64> {
+        let spec = parse_array_spec(
+            request
+                .array_spec
+                .as_deref()
+                .ok_or_else(|| SlotdError::from("missing array specification"))?,
+        )?;
+        let base_name = request
             .name
             .clone()
             .unwrap_or_else(|| default_name(&request.script_name));
+        let task_count = spec.task_ids.len() as u32;
+        let mut array_job_id = None;
+
+        for task_id in spec.task_ids {
+            let job_id = self.create_job_entry(
+                &request,
+                array_job_id,
+                Some(task_id),
+                Some(task_count),
+                spec.limit,
+                base_name.clone(),
+            )?;
+            if array_job_id.is_none() {
+                array_job_id = Some(job_id);
+                self.conn
+                    .execute("UPDATE jobs SET array_job_id = ?1 WHERE id = ?1", [job_id])?;
+            }
+        }
+
+        array_job_id.ok_or_else(|| SlotdError::from("array specification produced no jobs"))
+    }
+
+    fn create_job_entry(
+        &self,
+        request: &SubmitRequest,
+        array_job_id: Option<i64>,
+        array_task_id: Option<i32>,
+        array_task_count: Option<u32>,
+        array_task_limit: Option<u32>,
+        resolved_name: String,
+    ) -> Result<i64> {
+        let submit_time = now_ts();
+        let user_name = request.user_name.clone();
         self.conn.execute(
             "INSERT INTO jobs (
                 name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                requested_tasks, requested_gpus, allocation_only, submit_time, state_reason, time_limit_secs
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+                requested_tasks, requested_gpus, allocation_only, dependency,
+                array_job_id, array_task_id, array_task_count, array_task_limit, submit_time,
+                state_reason, time_limit_secs
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19)",
             params![
                 resolved_name,
-                request.user_name,
+                user_name,
                 JobState::Pending.as_str(),
-                request.partition,
+                &request.partition,
                 request
                     .command_override
                     .clone()
                     .unwrap_or_else(|| script_command(&request.script_name)),
-                request.cwd,
+                &request.cwd,
                 request.requested_cpus,
                 request.requested_memory_mb,
                 request.requested_tasks,
                 request.requested_gpus,
                 request.allocation_only,
+                request.dependency.as_deref(),
+                array_job_id,
+                array_task_id,
+                array_task_count.map(|value| value as i64),
+                array_task_limit.map(|value| value as i64),
                 submit_time,
-                "Resources",
+                "Priority",
                 request.time_limit_secs.map(|value| value as i64),
             ],
         )?;
@@ -67,20 +130,30 @@ impl Store {
         fs::create_dir_all(&job_dir)?;
 
         let script_path = job_dir.join("script.sh");
-        fs::write(&script_path, request.script_body)?;
+        fs::write(&script_path, &request.script_body)?;
 
         let default_stdout = expand_output_pattern(
-            default_batch_output_pattern(),
+            default_output_pattern(array_task_id),
             job_id,
             &resolved_name,
             &user_name,
             &self.config.hostname,
+            array_job_id,
+            array_task_id,
         );
         let stdout_path = request
             .stdout_path
             .as_deref()
             .map(|path| {
-                expand_output_pattern(path, job_id, &resolved_name, &user_name, &self.config.hostname)
+                expand_output_pattern(
+                    path,
+                    job_id,
+                    &resolved_name,
+                    &user_name,
+                    &self.config.hostname,
+                    array_job_id,
+                    array_task_id,
+                )
             })
             .unwrap_or(default_stdout);
         let stdout_path = PathBuf::from(resolve_log_path(&request.cwd, &stdout_path));
@@ -88,7 +161,15 @@ impl Store {
             .stderr_path
             .as_deref()
             .map(|path| {
-                expand_output_pattern(path, job_id, &resolved_name, &user_name, &self.config.hostname)
+                expand_output_pattern(
+                    path,
+                    job_id,
+                    &resolved_name,
+                    &user_name,
+                    &self.config.hostname,
+                    array_job_id,
+                    array_task_id,
+                )
             })
             .map(|path| PathBuf::from(resolve_log_path(&request.cwd, &path)))
             .unwrap_or_else(|| stdout_path.clone());
@@ -119,7 +200,8 @@ impl Store {
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only,
+                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
+                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs"
@@ -128,13 +210,7 @@ impl Store {
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(filter_jobs(
-            jobs,
-            states,
-            ids,
-            user_name,
-            partitions,
-            None,
-            None,
+            jobs, states, ids, user_name, partitions, None, None,
         ))
     }
 
@@ -149,7 +225,8 @@ impl Store {
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only,
+                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
+                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs"
@@ -158,20 +235,15 @@ impl Store {
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| b.id.cmp(&a.id));
         Ok(filter_jobs(
-            jobs,
-            states,
-            ids,
-            user_name,
-            partitions,
-            start_time,
-            end_time,
+            jobs, states, ids, user_name, partitions, start_time, end_time,
         ))
     }
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only,
+                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
+                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
@@ -187,7 +259,8 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                        requested_tasks, requested_gpus, allocation_only,
+                        requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
+                        array_task_id, array_task_count, array_task_limit, max_rss_kb,
                         submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                         assigned_gpus, script_path, stdout_path, stderr_path
                  FROM jobs
@@ -202,7 +275,9 @@ impl Store {
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only, submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
+                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
+                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'PENDING'
@@ -274,7 +349,12 @@ impl Store {
         Ok(())
     }
 
-    pub fn mark_state(&self, job_id: i64, state: JobState, state_reason: Option<&str>) -> Result<()> {
+    pub fn mark_state(
+        &self,
+        job_id: i64,
+        state: JobState,
+        state_reason: Option<&str>,
+    ) -> Result<()> {
         self.conn.execute(
             "UPDATE jobs
              SET state = ?1, state_reason = ?2
@@ -282,6 +362,43 @@ impl Store {
             params![state.as_str(), state_reason.unwrap_or(""), job_id],
         )?;
         Ok(())
+    }
+
+    pub fn update_max_rss(&self, job_id: i64, max_rss_kb: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs
+             SET max_rss_kb = CASE
+                 WHEN max_rss_kb IS NULL OR max_rss_kb < ?1 THEN ?1
+                 ELSE max_rss_kb
+             END
+             WHERE id = ?2",
+            params![max_rss_kb as i64, job_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn running_array_tasks(&self, array_job_id: i64) -> Result<u32> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM jobs WHERE array_job_id = ?1 AND state = 'RUNNING'",
+            [array_job_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count.max(0) as u32)
+    }
+
+    pub fn has_active_job_with_name(
+        &self,
+        user_name: &str,
+        job_name: &str,
+        exclude_job_id: i64,
+    ) -> Result<bool> {
+        let count = self.conn.query_row(
+            "SELECT COUNT(*) FROM jobs
+             WHERE user_name = ?1 AND name = ?2 AND id <> ?3 AND state IN ('PENDING', 'RUNNING', 'COMPLETING')",
+            params![user_name, job_name, exclude_job_id],
+            |row| row.get::<_, i64>(0),
+        )?;
+        Ok(count > 0)
     }
 
     pub fn cancel_pending_job(&self, job_id: i64) -> Result<bool> {
@@ -409,6 +526,42 @@ impl Store {
             "time_limit_secs",
             "ALTER TABLE jobs ADD COLUMN time_limit_secs INTEGER",
         )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "dependency",
+            "ALTER TABLE jobs ADD COLUMN dependency TEXT",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "array_job_id",
+            "ALTER TABLE jobs ADD COLUMN array_job_id INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "array_task_id",
+            "ALTER TABLE jobs ADD COLUMN array_task_id INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "array_task_count",
+            "ALTER TABLE jobs ADD COLUMN array_task_count INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "array_task_limit",
+            "ALTER TABLE jobs ADD COLUMN array_task_limit INTEGER",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "max_rss_kb",
+            "ALTER TABLE jobs ADD COLUMN max_rss_kb INTEGER",
+        )?;
         Ok(())
     }
 
@@ -417,15 +570,16 @@ impl Store {
             self.running_usage_for_partition(partition)?;
         let running_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Running)?;
         let pending_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Pending)?;
+        let is_gpu_partition = self.config.is_gpu_partition(partition);
         let state = partition_state(
-            partition,
+            is_gpu_partition,
             allocated_cpus,
             allocated_gpus,
             self.config.total_cpus,
             self.config.total_gpus,
         );
         let gres_used = partition_gres_used(
-            partition,
+            is_gpu_partition,
             &self.config.gpu_model,
             self.config.total_gpus,
             &self.used_gpu_ids_for_partition(partition)?,
@@ -437,7 +591,7 @@ impl Store {
             gres_used,
             total_cpus: self.config.total_cpus,
             total_memory_mb: self.config.total_memory_mb,
-            total_gpus: if partition == "gpu" {
+            total_gpus: if self.config.is_gpu_partition(partition) {
                 self.config.total_gpus
             } else {
                 0
@@ -521,28 +675,34 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         requested_tasks: row.get(9)?,
         requested_gpus: row.get(10)?,
         allocation_only: row.get::<_, bool>(11)?,
-        submit_time: row.get(12)?,
-        start_time: row.get(13)?,
-        end_time: row.get(14)?,
-        pid: row.get(15)?,
-        pgid: row.get(16)?,
-        exit_code: row.get(17)?,
+        dependency: row.get(12)?,
+        array_job_id: row.get(13)?,
+        array_task_id: row.get(14)?,
+        array_task_count: row.get::<_, Option<i64>>(15)?.map(|value| value as u32),
+        array_task_limit: row.get::<_, Option<i64>>(16)?.map(|value| value as u32),
+        max_rss_kb: row.get::<_, Option<i64>>(17)?.map(|value| value as u64),
+        submit_time: row.get(18)?,
+        start_time: row.get(19)?,
+        end_time: row.get(20)?,
+        pid: row.get(21)?,
+        pgid: row.get(22)?,
+        exit_code: row.get(23)?,
         state_reason: row
-            .get::<_, String>(18)
+            .get::<_, String>(24)
             .ok()
             .filter(|value| !value.is_empty()),
-        term_signal: row.get(19)?,
-        time_limit_secs: row.get::<_, Option<i64>>(20)?.map(|value| value as u64),
-        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(21)?).map_err(|error| {
+        term_signal: row.get(25)?,
+        time_limit_secs: row.get::<_, Option<i64>>(26)?.map(|value| value as u64),
+        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(27)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                21,
+                27,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        script_path: row.get(22)?,
-        stdout_path: row.get(23)?,
-        stderr_path: row.get(24)?,
+        script_path: row.get(28)?,
+        stdout_path: row.get(29)?,
+        stderr_path: row.get(30)?,
     })
 }
 
@@ -560,6 +720,14 @@ fn default_name(script_name: &str) -> String {
         .and_then(|name| name.to_str())
         .unwrap_or("batch-job")
         .to_string()
+}
+
+fn default_output_pattern(array_task_id: Option<i32>) -> &'static str {
+    if array_task_id.is_some() {
+        "slurm-%A_%a.out"
+    } else {
+        default_batch_output_pattern()
+    }
 }
 
 fn script_command(script_name: &str) -> String {
@@ -630,10 +798,16 @@ fn filter_jobs(
             let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
             let user_ok = user_name.map(|name| job.user_name == name).unwrap_or(true);
             let partition_ok = partitions
-                .map(|partitions| partitions.iter().any(|partition| partition == &job.partition))
+                .map(|partitions| {
+                    partitions
+                        .iter()
+                        .any(|partition| partition == &job.partition)
+                })
                 .unwrap_or(true);
             let start_ok = start_time
-                .map(|start| job.submit_time >= start || job.start_time.unwrap_or(job.submit_time) >= start)
+                .map(|start| {
+                    job.submit_time >= start || job.start_time.unwrap_or(job.submit_time) >= start
+                })
                 .unwrap_or(true);
             let end_ok = end_time
                 .map(|end| {
@@ -647,13 +821,13 @@ fn filter_jobs(
 }
 
 fn partition_state(
-    partition: &str,
+    is_gpu_partition: bool,
     allocated_cpus: u32,
     allocated_gpus: u32,
     total_cpus: u32,
     total_gpus: u32,
 ) -> String {
-    if partition == "gpu" {
+    if is_gpu_partition {
         if allocated_gpus == 0 {
             "idle".to_string()
         } else if allocated_gpus >= total_gpus {
@@ -671,12 +845,12 @@ fn partition_state(
 }
 
 fn partition_gres_used(
-    partition: &str,
+    is_gpu_partition: bool,
     gpu_model: &str,
     total_gpus: u32,
     ids: &[u32],
 ) -> String {
-    if partition != "gpu" {
+    if !is_gpu_partition {
         return "N/A".to_string();
     }
 

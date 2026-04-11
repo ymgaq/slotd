@@ -16,6 +16,7 @@ At this stage, `slotd` is a single-binary Rust application that provides:
 - partition-aware scheduling for multiple configured CPU and GPU partition names
 - queue inspection
 - accounting inspection
+- detailed job inspection via `scontrol show job`
 - job cancellation
 - single-node resource display
 - SQLite-backed job persistence
@@ -31,6 +32,7 @@ The current binary supports these subcommands:
 - `slotd salloc [options] [command...]`
 - `slotd squeue`
 - `slotd sacct`
+- `slotd scontrol show job <job_id>`
 - `slotd scancel <job_id>`
 - `slotd sinfo`
 
@@ -41,6 +43,7 @@ The CLI also supports Slurm-like command aliases through `argv[0]` dispatch for:
 - `salloc`
 - `squeue`
 - `sacct`
+- `scontrol`
 - `scancel`
 - `sinfo`
 
@@ -86,6 +89,8 @@ The currently implemented job states are:
 State behavior:
 
 - `sbatch` inserts a new job as `PENDING`
+- `sbatch --dependency` stores dependency expressions and the scheduler waits for them to clear
+- `sbatch --array` expands into multiple persisted child jobs
 - `srun` inserts a command job and waits for completion by default
 - `salloc` inserts an allocation-only job and waits until the allocation becomes runnable
 - the daemon scheduler starts a pending job when enough reserved resources are available
@@ -100,6 +105,7 @@ Reason and termination tracking:
 
 - jobs store a `state_reason`
 - jobs store a terminating signal separately from numeric exit code
+- jobs store dependency expressions, array metadata, and peak RSS when observed
 - queue and accounting output use these richer terminal details where available
 
 ## Scheduling Behavior
@@ -110,6 +116,8 @@ Implemented behavior:
 
 - the daemon checks for runnable jobs in ID order
 - only one pending job is selected per scheduler loop iteration
+- pending jobs blocked by dependencies are marked with `Dependency`
+- pending array tasks blocked by their `%limit` are marked with `JobArrayTaskLimit`
 - resource admission is based on reserved CPU, memory, and GPU values
 - CPU reservation is `ntasks * cpus-per-task`
 - resources are derived from currently running jobs recorded in SQLite
@@ -158,9 +166,8 @@ Partition behavior:
 
 Not implemented yet:
 
-- cgroup-based runtime enforcement
 - CPU pinning
-- actual memory limits
+- mandatory runtime enforcement when cgroup v2 is unavailable
 
 ## Batch Submission
 
@@ -188,6 +195,8 @@ Supported CLI options:
 - `-o`, `--output`
 - `-e`, `--error`
 - `-D`, `--chdir`
+- `-d`, `--dependency`
+- `-a`, `--array`
 - `--parsable`
 - `-W`, `--wait`
 
@@ -203,6 +212,8 @@ Supported `#SBATCH` directives in script contents:
 - `-o`, `--output`
 - `-e`, `--error`
 - `-D`, `--chdir`
+- `-d`, `--dependency`
+- `-a`, `--array`
 
 Directive parsing behavior:
 
@@ -217,15 +228,30 @@ Precedence:
 Currently implemented output path behavior:
 
 - default stdout path is `slurm-%j.out`
+- array jobs default to `slurm-%A_%a.out`
 - if `--error` is not specified, stderr is sent to the same file as stdout
-- output patterns currently support `%j`, `%x`, `%u`, `%N`, and `%%`
+- output patterns currently support `%j`, `%A`, `%a`, `%x`, `%u`, `%N`, and `%%`
+
+Currently implemented dependency behavior:
+
+- `after:<jobid>`
+- `afterany:<jobid>`
+- `afterok:<jobid>`
+- `afternotok:<jobid>`
+- `singleton`
+
+Currently implemented array behavior:
+
+- array expressions support comma-separated task IDs
+- ranges like `0-7`
+- ranges with steps like `0-15:2`
+- concurrency limits like `0-31%4`
 
 Not implemented yet:
 
-- dependencies
-- arrays
 - accounts
 - priorities
+- a separate umbrella parent record distinct from child task records
 
 ## Command Submission
 
@@ -308,6 +334,9 @@ Implemented behavior:
 - the daemon tracks the child in memory while it is running
 - the daemon enforces configured time limits and terminates overdue jobs
 - basic Slurm-style environment variables are exported for daemon-launched jobs
+- array jobs export `SLURM_ARRAY_JOB_ID` and `SLURM_ARRAY_TASK_ID`
+- when `SLOTD_CGROUP_BASE` points at a writable cgroup v2 subtree, the daemon attempts to set `memory.max`, `cpu.max`, and join the child process to that cgroup
+- the daemon samples `/proc/<pid>/status` to record peak RSS when available
 
 `scancel` behavior:
 
@@ -333,7 +362,13 @@ The `jobs` table currently stores:
 - requested memory
 - requested GPUs
 - whether the job is allocation-only
+- dependency expression
+- array job ID
+- array task ID
+- array task count
+- array task concurrency limit
 - configured time limit
+- observed max RSS
 - assigned GPU IDs
 - submit, start, and end timestamps
 - PID and PGID
@@ -413,6 +448,7 @@ Notes:
 
 - state uses short codes such as `PD`, `R`, `CG`, `CD`, `F`, `CA`, `TO`, `OOM`
 - `NODELIST(REASON)` shows hostname for running and completed jobs, and a simple reason token for others
+- array tasks render `JOBID` as `<array_job_id>_<task_id>`
 
 ### `sacct`
 
@@ -440,6 +476,8 @@ Default columns:
 Supported `sacct --format` fields:
 
 - `JobID`
+- `ArrayJobID`
+- `ArrayTaskID`
 - `JobName`
 - `Partition`
 - `User`
@@ -447,11 +485,25 @@ Supported `sacct --format` fields:
 - `Reason`
 - `ExitCode`
 - `Elapsed`
+- `AllocCPUS`
+- `ReqMem`
+- `NodeList`
+- `MaxRSS`
 
 Formatting notes:
 
 - output columns are width-aligned for the human-readable default mode
 - `ExitCode` is currently rendered as `<code>:<signal>`
+- `JobID` renders array tasks as `<array_job_id>_<task_id>`
+
+### `scontrol`
+
+Current behavior:
+
+- supports `scontrol show job <job_id>`
+- prints a Slurm-like summary block for one job
+- includes dependency, array metadata, submit/start/end times, resource requests, and resolved paths
+- reports `(null)` for fields that are not populated yet
 
 ### `sinfo`
 
@@ -511,13 +563,10 @@ The following planned features are not implemented yet:
 
 - real-time `srun` stdio streaming
 - `srun --pty`
-- exact runtime detection for `OUT_OF_MEMORY`
 - full Slurm `--format` syntax and field coverage
-- dependency handling
-- array jobs
 - structured config file
 - `--json` output
-- cgroup v2 resource enforcement
+- exact runtime detection for `OUT_OF_MEMORY` without cgroup-backed evidence
 - multi-job fairness or priority scheduling
 - systemd-managed installation flow
 
@@ -530,4 +579,9 @@ The repository is currently verified by unit tests for:
 - time-limit parsing for `sbatch` / `srun`
 - `#SBATCH` parsing rules
 - supported `--format` field parsing for `squeue`, `sacct`, and `sinfo`
-- output pattern expansion for `%j`, `%x`, `%u`, `%N`, and `%%`
+- output pattern expansion for `%j`, `%A`, `%a`, `%x`, `%u`, `%N`, and `%%`
+- array-spec parsing
+
+The repository also includes a local end-to-end smoke test script at:
+
+- [scripts/smoke_phase5.sh](/home/yu_yamaguchi/workspace/slotd/scripts/smoke_phase5.sh)

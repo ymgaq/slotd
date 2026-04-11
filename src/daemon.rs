@@ -7,7 +7,7 @@ use std::time::Duration;
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::ipc::{Request, Response};
-use crate::job::SubmitRequest;
+use crate::job::{JobRecord, JobState, SubmitRequest};
 use crate::recovery;
 use crate::runner::Runner;
 use crate::store::Store;
@@ -151,25 +151,35 @@ fn handle_stream(
 fn schedule_pending_jobs(store: &Store, runner: &mut Runner) -> Result<()> {
     loop {
         let pending_jobs = store.next_pending_jobs()?;
-        let next_job = pending_jobs.into_iter().find(|job| {
-            resources_fit(
+        let mut started = false;
+        for job in pending_jobs {
+            if let Some(reason) = pending_block_reason(store, &job)? {
+                store.mark_state(job.id, JobState::Pending, Some(reason))?;
+                continue;
+            }
+
+            let fits = resources_fit(
                 store,
                 &job.partition,
                 job.requested_cpus,
                 job.requested_tasks,
                 job.requested_memory_mb,
                 job.requested_gpus,
-            )
-            .unwrap_or(false)
-        });
+            )?;
+            if !fits {
+                store.mark_state(job.id, JobState::Pending, Some("Resources"))?;
+                continue;
+            }
 
-        if let Some(job) = next_job {
             if job.allocation_only {
                 store.mark_allocation_running(job.id)?;
             } else {
                 runner.launch(store, &job)?;
             }
-        } else {
+            started = true;
+            break;
+        }
+        if !started {
             break;
         }
     }
@@ -246,4 +256,84 @@ fn resources_fit(
         _ => requested_gpus == 0,
     };
     Ok(enough_base && enough_gpu)
+}
+
+fn pending_block_reason<'a>(store: &'a Store, job: &'a JobRecord) -> Result<Option<&'static str>> {
+    if !dependency_satisfied(store, job)? {
+        return Ok(Some("Dependency"));
+    }
+
+    if let (Some(array_job_id), Some(limit)) = (job.array_job_id, job.array_task_limit) {
+        if limit > 0 && store.running_array_tasks(array_job_id)? >= limit {
+            return Ok(Some("JobArrayTaskLimit"));
+        }
+    }
+
+    Ok(None)
+}
+
+fn dependency_satisfied(store: &Store, job: &JobRecord) -> Result<bool> {
+    let Some(spec) = job
+        .dependency
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(true);
+    };
+
+    for clause in spec
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        if !dependency_clause_satisfied(store, job, clause)? {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
+}
+
+fn dependency_clause_satisfied(store: &Store, job: &JobRecord, clause: &str) -> Result<bool> {
+    if clause.eq_ignore_ascii_case("singleton") {
+        return store
+            .has_active_job_with_name(&job.user_name, &job.name, job.id)
+            .map(|active| !active);
+    }
+
+    let Some((kind, value)) = clause.split_once(':') else {
+        return Ok(false);
+    };
+    let dependency_ids = value
+        .split(':')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            value.parse::<i64>().map_err(|_| {
+                crate::error::SlotdError::from(format!("invalid dependency job id: {value}"))
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    if dependency_ids.is_empty() {
+        return Ok(false);
+    }
+
+    for dependency_id in dependency_ids {
+        let Some(target) = store.get_job(dependency_id)? else {
+            return Ok(false);
+        };
+        let satisfied = match kind {
+            "after" => target.start_time.is_some() || target.state.is_terminal(),
+            "afterany" => target.state.is_terminal(),
+            "afterok" => target.state == JobState::Completed,
+            "afternotok" => target.state.is_terminal() && target.state != JobState::Completed,
+            _ => false,
+        };
+        if !satisfied {
+            return Ok(false);
+        }
+    }
+
+    Ok(true)
 }

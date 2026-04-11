@@ -16,20 +16,33 @@ pub fn print_squeue_jobs(
             right_align: field.right_align(),
         }),
         jobs.iter().map(|job| {
-            fields.iter().map(|field| field.render(config, job)).collect::<Vec<_>>()
+            fields
+                .iter()
+                .map(|field| field.render(config, job))
+                .collect::<Vec<_>>()
         }),
         noheader,
     );
 }
 
-pub fn print_sacct_jobs(jobs: &[JobRecord], fields: &[SacctField], noheader: bool) {
+pub fn print_sacct_jobs(
+    config: &AppConfig,
+    jobs: &[JobRecord],
+    fields: &[SacctField],
+    noheader: bool,
+) {
     print_table(
         fields.iter().map(|field| TableColumn {
             header: field.header().to_string(),
             width: field.width(),
             right_align: field.right_align(),
         }),
-        jobs.iter().map(|job| fields.iter().map(|field| field.render(job)).collect::<Vec<_>>()),
+        jobs.iter().map(|job| {
+            fields
+                .iter()
+                .map(|field| field.render(config, job))
+                .collect::<Vec<_>>()
+        }),
         noheader,
     );
 }
@@ -82,7 +95,7 @@ impl SqueueField {
 
     pub fn width(self) -> usize {
         match self {
-            Self::JobId => 5,
+            Self::JobId => 12,
             Self::Partition => 9,
             Self::Name => 10,
             Self::User => 12,
@@ -98,7 +111,7 @@ impl SqueueField {
 
     pub fn render(self, config: &AppConfig, job: &JobRecord) -> String {
         match self {
-            Self::JobId => job.id.to_string(),
+            Self::JobId => display_job_id(job),
             Self::Partition => job.partition.clone(),
             Self::Name => job.name.clone(),
             Self::User => job.user_name.clone(),
@@ -112,6 +125,8 @@ impl SqueueField {
 #[derive(Debug, Clone, Copy)]
 pub enum SacctField {
     JobId,
+    ArrayJobId,
+    ArrayTaskId,
     JobName,
     Partition,
     User,
@@ -119,12 +134,18 @@ pub enum SacctField {
     Reason,
     ExitCode,
     Elapsed,
+    AllocCpus,
+    ReqMem,
+    NodeList,
+    MaxRss,
 }
 
 impl SacctField {
     pub fn header(self) -> &'static str {
         match self {
             Self::JobId => "JobID",
+            Self::ArrayJobId => "ArrayJobID",
+            Self::ArrayTaskId => "ArrayTaskID",
             Self::JobName => "JobName",
             Self::Partition => "Partition",
             Self::User => "User",
@@ -132,12 +153,24 @@ impl SacctField {
             Self::Reason => "Reason",
             Self::ExitCode => "ExitCode",
             Self::Elapsed => "Elapsed",
+            Self::AllocCpus => "AllocCPUS",
+            Self::ReqMem => "ReqMem",
+            Self::NodeList => "NodeList",
+            Self::MaxRss => "MaxRSS",
         }
     }
 
-    pub fn render(self, job: &JobRecord) -> String {
+    pub fn render(self, config: &AppConfig, job: &JobRecord) -> String {
         match self {
-            Self::JobId => job.id.to_string(),
+            Self::JobId => display_job_id(job),
+            Self::ArrayJobId => job
+                .array_job_id
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
+            Self::ArrayTaskId => job
+                .array_task_id
+                .map(|value| value.to_string())
+                .unwrap_or_default(),
             Self::JobName => job.name.clone(),
             Self::Partition => job.partition.clone(),
             Self::User => job.user_name.clone(),
@@ -145,12 +178,30 @@ impl SacctField {
             Self::Reason => job.state_reason.clone().unwrap_or_default(),
             Self::ExitCode => format_exit_code(job),
             Self::Elapsed => format_elapsed(job),
+            Self::AllocCpus => job
+                .requested_cpus
+                .saturating_mul(job.requested_tasks)
+                .to_string(),
+            Self::ReqMem => format!("{}M", job.requested_memory_mb),
+            Self::NodeList => {
+                if matches!(job.state, JobState::Pending) {
+                    String::new()
+                } else {
+                    config.hostname.clone()
+                }
+            }
+            Self::MaxRss => job
+                .max_rss_kb
+                .map(|value| format!("{value}K"))
+                .unwrap_or_default(),
         }
     }
 
     pub fn width(self) -> usize {
         match self {
-            Self::JobId => 5,
+            Self::JobId => 12,
+            Self::ArrayJobId => 10,
+            Self::ArrayTaskId => 11,
             Self::JobName => 10,
             Self::Partition => 9,
             Self::User => 12,
@@ -158,11 +209,25 @@ impl SacctField {
             Self::Reason => 16,
             Self::ExitCode => 8,
             Self::Elapsed => 11,
+            Self::AllocCpus => 9,
+            Self::ReqMem => 8,
+            Self::NodeList => 12,
+            Self::MaxRss => 10,
         }
     }
 
     pub fn right_align(self) -> bool {
-        matches!(self, Self::JobId | Self::ExitCode | Self::Elapsed)
+        matches!(
+            self,
+            Self::JobId
+                | Self::ArrayJobId
+                | Self::ArrayTaskId
+                | Self::ExitCode
+                | Self::Elapsed
+                | Self::AllocCpus
+                | Self::ReqMem
+                | Self::MaxRss
+        )
     }
 }
 
@@ -256,6 +321,8 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
             .split(',')
             .map(|field| match field.trim().to_ascii_lowercase().as_str() {
                 "jobid" => Ok(SacctField::JobId),
+                "arrayjobid" => Ok(SacctField::ArrayJobId),
+                "arraytaskid" => Ok(SacctField::ArrayTaskId),
                 "jobname" => Ok(SacctField::JobName),
                 "partition" => Ok(SacctField::Partition),
                 "user" => Ok(SacctField::User),
@@ -263,6 +330,10 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
                 "reason" => Ok(SacctField::Reason),
                 "exitcode" => Ok(SacctField::ExitCode),
                 "elapsed" => Ok(SacctField::Elapsed),
+                "alloccpus" => Ok(SacctField::AllocCpus),
+                "reqmem" => Ok(SacctField::ReqMem),
+                "nodelist" => Ok(SacctField::NodeList),
+                "maxrss" => Ok(SacctField::MaxRss),
                 other => Err(format!("unsupported sacct field: {other}")),
             })
             .collect(),
@@ -387,12 +458,25 @@ fn squeue_nodelist_reason(config: &AppConfig, job: &JobRecord) -> String {
         JobState::Cancelled => format_reason(job.state_reason.as_deref().unwrap_or("Cancelled")),
         JobState::Failed => format_reason(job.state_reason.as_deref().unwrap_or("Failed")),
         JobState::Timeout => format_reason(job.state_reason.as_deref().unwrap_or("TimeLimit")),
-        JobState::OutOfMemory => format_reason(job.state_reason.as_deref().unwrap_or("OutOfMemory")),
+        JobState::OutOfMemory => {
+            format_reason(job.state_reason.as_deref().unwrap_or("OutOfMemory"))
+        }
     }
 }
 
 fn format_exit_code(job: &JobRecord) -> String {
-    format!("{}:{}", job.exit_code.unwrap_or(0), job.term_signal.unwrap_or(0))
+    format!(
+        "{}:{}",
+        job.exit_code.unwrap_or(0),
+        job.term_signal.unwrap_or(0)
+    )
+}
+
+fn display_job_id(job: &JobRecord) -> String {
+    match (job.array_job_id, job.array_task_id) {
+        (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
+        _ => job.id.to_string(),
+    }
 }
 
 fn format_reason(reason: &str) -> String {
@@ -416,47 +500,55 @@ mod tests {
     #[test]
     fn default_sacct_fields_match_expected_order() {
         let fields = parse_sacct_fields(None).expect("default fields");
-        assert!(matches!(fields.as_slice(), [
-            SacctField::JobId,
-            SacctField::Partition,
-            SacctField::JobName,
-            SacctField::User,
-            SacctField::State,
-            SacctField::ExitCode
-        ]));
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SacctField::JobId,
+                SacctField::Partition,
+                SacctField::JobName,
+                SacctField::User,
+                SacctField::State,
+                SacctField::ExitCode
+            ]
+        ));
     }
 
     #[test]
     fn parses_custom_sacct_field_list() {
         let fields = parse_sacct_fields(Some("JobID,State,Elapsed")).expect("custom fields");
-        assert!(matches!(fields.as_slice(), [
-            SacctField::JobId,
-            SacctField::State,
-            SacctField::Elapsed
-        ]));
+        assert!(matches!(
+            fields.as_slice(),
+            [SacctField::JobId, SacctField::State, SacctField::Elapsed]
+        ));
     }
 
     #[test]
     fn parses_custom_squeue_field_list() {
         let fields = parse_squeue_fields(Some("JobID,Name,State,Reason")).expect("custom fields");
-        assert!(matches!(fields.as_slice(), [
-            SqueueField::JobId,
-            SqueueField::Name,
-            SqueueField::StateCompact,
-            SqueueField::NodeListReason
-        ]));
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SqueueField::JobId,
+                SqueueField::Name,
+                SqueueField::StateCompact,
+                SqueueField::NodeListReason
+            ]
+        ));
     }
 
     #[test]
     fn parses_custom_sinfo_field_list() {
-        let fields = parse_sinfo_fields(Some("Partition,Hostnames,State,GresUsed"))
-            .expect("custom fields");
-        assert!(matches!(fields.as_slice(), [
-            SinfoField::Partition,
-            SinfoField::Hostnames,
-            SinfoField::State,
-            SinfoField::GresUsed
-        ]));
+        let fields =
+            parse_sinfo_fields(Some("Partition,Hostnames,State,GresUsed")).expect("custom fields");
+        assert!(matches!(
+            fields.as_slice(),
+            [
+                SinfoField::Partition,
+                SinfoField::Hostnames,
+                SinfoField::State,
+                SinfoField::GresUsed
+            ]
+        ));
     }
 
     #[test]
