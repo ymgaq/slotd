@@ -17,7 +17,24 @@ use crate::output::{
     parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
     print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs,
 };
-use crate::sbatch::{parse_directives, parse_mem_mb, parse_time_limit_secs};
+use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
+
+const SUPPORTED_ROOT_COMMANDS: &[&str] = &[
+    "daemon", "sbatch", "srun", "salloc", "scontrol", "squeue", "sacct", "scancel", "sinfo",
+];
+const SUPPORTED_USER_COMMANDS: &[&str] = &[
+    "sbatch", "srun", "salloc", "scontrol", "squeue", "sacct", "scancel", "sinfo",
+];
+const CORE_RESOURCE_LONG_FLAGS: &[&str] = &[
+    "job-name",
+    "partition",
+    "cpus-per-task",
+    "ntasks",
+    "mem",
+    "time",
+    "gpus",
+    "chdir",
+];
 
 #[derive(Debug, Parser)]
 #[command(name = "slotd")]
@@ -41,11 +58,7 @@ enum Commands {
 }
 
 #[derive(Debug, Args)]
-pub struct SbatchArgs {
-    #[arg(required_unless_present = "wrap", conflicts_with = "wrap")]
-    script: Option<PathBuf>,
-    #[arg(long)]
-    wrap: Option<String>,
+pub struct ResourceArgs {
     #[arg(long, short = 'J')]
     job_name: Option<String>,
     #[arg(long, short = 'p')]
@@ -60,12 +73,92 @@ pub struct SbatchArgs {
     time: Option<String>,
     #[arg(long, short = 'G')]
     gpus: Option<u32>,
+    #[arg(long, short = 'D')]
+    chdir: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ResolvedResourceArgs {
+    job_name: Option<String>,
+    partition: String,
+    cwd: String,
+    requested_cpus: u32,
+    requested_tasks: u32,
+    requested_memory_mb: u64,
+    requested_gpus: u32,
+    time_limit_secs: Option<u64>,
+}
+
+impl ResourceArgs {
+    fn resolve(
+        &self,
+        config: &AppConfig,
+        directives: Option<&BatchDirectives>,
+    ) -> Result<ResolvedResourceArgs> {
+        let cwd = self
+            .chdir
+            .as_ref()
+            .map(|path| path.to_string_lossy().to_string())
+            .or_else(|| directives.and_then(|value| value.chdir.clone()))
+            .unwrap_or_else(current_dir_string);
+        let partition = self
+            .partition
+            .clone()
+            .or_else(|| directives.and_then(|value| value.partition.clone()))
+            .unwrap_or_else(|| config.default_partition().to_string());
+        if !config.has_partition(&partition) {
+            return Err(SlotdError::from(format!("unknown partition: {partition}")));
+        }
+
+        let requested_cpus = self
+            .cpus_per_task
+            .or_else(|| directives.and_then(|value| value.cpus_per_task))
+            .unwrap_or(1);
+        let requested_tasks = self
+            .ntasks
+            .or_else(|| directives.and_then(|value| value.ntasks))
+            .unwrap_or(1);
+        let requested_memory_mb = match &self.mem {
+            Some(value) => parse_mem_mb(value)?,
+            None => directives.and_then(|value| value.mem_mb).unwrap_or(512),
+        };
+        let requested_gpus = self
+            .gpus
+            .or_else(|| directives.and_then(|value| value.gpus))
+            .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
+        let time_limit_secs = match &self.time {
+            Some(value) => Some(parse_time_limit_secs(value)?),
+            None => directives.and_then(|value| value.time_limit_secs),
+        };
+
+        Ok(ResolvedResourceArgs {
+            job_name: self
+                .job_name
+                .clone()
+                .or_else(|| directives.and_then(|value| value.job_name.clone())),
+            partition,
+            cwd,
+            requested_cpus,
+            requested_tasks,
+            requested_memory_mb,
+            requested_gpus,
+            time_limit_secs,
+        })
+    }
+}
+
+#[derive(Debug, Args)]
+pub struct SbatchArgs {
+    #[arg(required_unless_present = "wrap", conflicts_with = "wrap")]
+    script: Option<PathBuf>,
+    #[arg(long)]
+    wrap: Option<String>,
+    #[command(flatten)]
+    resources: ResourceArgs,
     #[arg(long, short = 'o')]
     output: Option<PathBuf>,
     #[arg(long, short = 'e')]
     error: Option<PathBuf>,
-    #[arg(long, short = 'D')]
-    chdir: Option<PathBuf>,
     #[arg(long, short = 'd')]
     dependency: Option<String>,
     #[arg(long, short = 'a')]
@@ -136,26 +229,12 @@ pub struct SacctArgs {
 
 #[derive(Debug, Args)]
 pub struct SrunArgs {
-    #[arg(long, short = 'J')]
-    job_name: Option<String>,
-    #[arg(long, short = 'p')]
-    partition: Option<String>,
-    #[arg(long, short = 'c')]
-    cpus_per_task: Option<u32>,
-    #[arg(long, short = 'n')]
-    ntasks: Option<u32>,
-    #[arg(long)]
-    mem: Option<String>,
-    #[arg(long, short = 't')]
-    time: Option<String>,
-    #[arg(long, short = 'G')]
-    gpus: Option<u32>,
+    #[command(flatten)]
+    resources: ResourceArgs,
     #[arg(long, short = 'o')]
     output: Option<PathBuf>,
     #[arg(long, short = 'e')]
     error: Option<PathBuf>,
-    #[arg(long, short = 'D')]
-    chdir: Option<PathBuf>,
     #[arg(long)]
     immediate: bool,
     #[arg(long)]
@@ -168,22 +247,8 @@ pub struct SrunArgs {
 
 #[derive(Debug, Args)]
 pub struct SallocArgs {
-    #[arg(long, short = 'J')]
-    job_name: Option<String>,
-    #[arg(long, short = 'p')]
-    partition: Option<String>,
-    #[arg(long, short = 'c')]
-    cpus_per_task: Option<u32>,
-    #[arg(long, short = 'n')]
-    ntasks: Option<u32>,
-    #[arg(long)]
-    mem: Option<String>,
-    #[arg(long, short = 't')]
-    time: Option<String>,
-    #[arg(long, short = 'G')]
-    gpus: Option<u32>,
-    #[arg(long, short = 'D')]
-    chdir: Option<PathBuf>,
+    #[command(flatten)]
+    resources: ResourceArgs,
     #[arg(long)]
     immediate: bool,
     #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -272,52 +337,24 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
             .to_string();
         (script_name, script_body, directives, None)
     };
-
-    let cwd = args
-        .chdir
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string())
-        .or(directives.chdir.clone())
-        .unwrap_or_else(current_dir_string);
-    let partition = args
-        .partition
-        .clone()
-        .or(directives.partition.clone())
-        .unwrap_or_else(|| config.default_partition().to_string());
-    if !config.has_partition(&partition) {
-        return Err(SlotdError::from(format!("unknown partition: {partition}")));
-    }
-    let requested_cpus = args.cpus_per_task.or(directives.cpus_per_task).unwrap_or(1);
-    let requested_tasks = args.ntasks.or(directives.ntasks).unwrap_or(1);
-    let requested_memory_mb = match &args.mem {
-        Some(value) => parse_mem_mb(value)?,
-        None => directives.mem_mb.unwrap_or(512),
-    };
-    let requested_gpus = args
-        .gpus
-        .or(directives.gpus)
-        .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
-    let time_limit_secs = match &args.time {
-        Some(value) => Some(parse_time_limit_secs(value)?),
-        None => directives.time_limit_secs,
-    };
+    let resolved = args.resources.resolve(&config, Some(&directives))?;
 
     let request = SubmitRequest {
-        name: args.job_name.or(directives.job_name),
+        name: resolved.job_name,
         user_name: current_user_name(),
-        partition,
-        cwd,
+        partition: resolved.partition,
+        cwd: resolved.cwd,
         script_name,
         script_body,
         command_override,
-        requested_cpus,
-        requested_tasks,
-        requested_memory_mb,
-        requested_gpus,
+        requested_cpus: resolved.requested_cpus,
+        requested_tasks: resolved.requested_tasks,
+        requested_memory_mb: resolved.requested_memory_mb,
+        requested_gpus: resolved.requested_gpus,
         allocation_only: false,
         dependency: args.dependency.or(directives.dependency),
         array_spec: args.array.or(directives.array_spec),
-        time_limit_secs,
+        time_limit_secs: resolved.time_limit_secs,
         stdout_path: args
             .output
             .map(|path| path.to_string_lossy().to_string())
@@ -353,50 +390,26 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         return run_foreground_step(&config, &job, &args.command);
     }
 
-    let cwd = args
-        .chdir
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(current_dir_string);
+    let resolved = args.resources.resolve(&config, None)?;
     let command_name = args
         .command
         .first()
         .map(|value| command_basename(value))
         .unwrap_or_else(|| "srun".to_string());
-    let partition = args
-        .partition
-        .unwrap_or_else(|| config.default_partition().to_string());
-    if !config.has_partition(&partition) {
-        return Err(SlotdError::from(format!("unknown partition: {partition}")));
-    }
-    let requested_cpus = args.cpus_per_task.unwrap_or(1);
-    let requested_tasks = args.ntasks.unwrap_or(1);
-    let requested_memory_mb = match args.mem {
-        Some(value) => parse_mem_mb(&value)?,
-        None => 512,
-    };
-    let requested_gpus = args
-        .gpus
-        .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
-    let time_limit_secs = args
-        .time
-        .as_deref()
-        .map(parse_time_limit_secs)
-        .transpose()?;
     let command_override = shell_join(&args.command);
 
     if !args.no_wait && (args.pty || (args.output.is_none() && args.error.is_none())) {
         return run_interactive_srun(
             &config,
             InteractiveRunSpec {
-                name: args.job_name.or_else(|| Some(command_name)),
-                partition,
-                cwd,
-                requested_cpus,
-                requested_tasks,
-                requested_memory_mb,
-                requested_gpus,
-                time_limit_secs,
+                name: resolved.job_name.or_else(|| Some(command_name)),
+                partition: resolved.partition,
+                cwd: resolved.cwd,
+                requested_cpus: resolved.requested_cpus,
+                requested_tasks: resolved.requested_tasks,
+                requested_memory_mb: resolved.requested_memory_mb,
+                requested_gpus: resolved.requested_gpus,
+                time_limit_secs: resolved.time_limit_secs,
                 immediate: args.immediate,
                 command: args.command,
             },
@@ -406,21 +419,21 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
     let script_body = format!("#!/usr/bin/env bash\nexec {}\n", command_override);
 
     let request = SubmitRequest {
-        name: args.job_name.or_else(|| Some(command_name.clone())),
+        name: resolved.job_name.or_else(|| Some(command_name.clone())),
         user_name: current_user_name(),
-        partition,
-        cwd,
+        partition: resolved.partition,
+        cwd: resolved.cwd,
         script_name: command_name,
         script_body,
         command_override: Some(command_override),
-        requested_cpus,
-        requested_tasks,
-        requested_memory_mb,
-        requested_gpus,
+        requested_cpus: resolved.requested_cpus,
+        requested_tasks: resolved.requested_tasks,
+        requested_memory_mb: resolved.requested_memory_mb,
+        requested_gpus: resolved.requested_gpus,
         allocation_only: false,
         dependency: None,
         array_spec: None,
-        time_limit_secs,
+        time_limit_secs: resolved.time_limit_secs,
         stdout_path: args
             .output
             .clone()
@@ -462,11 +475,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
 }
 
 fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
-    let cwd = args
-        .chdir
-        .as_ref()
-        .map(|path| path.to_string_lossy().to_string())
-        .unwrap_or_else(current_dir_string);
+    let resolved = args.resources.resolve(&config, None)?;
     let command = if args.command.is_empty() {
         vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())]
     } else {
@@ -476,43 +485,23 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         .first()
         .map(|value| command_basename(value))
         .unwrap_or_else(|| "salloc".to_string());
-    let partition = args
-        .partition
-        .unwrap_or_else(|| config.default_partition().to_string());
-    if !config.has_partition(&partition) {
-        return Err(SlotdError::from(format!("unknown partition: {partition}")));
-    }
-    let requested_cpus = args.cpus_per_task.unwrap_or(1);
-    let requested_tasks = args.ntasks.unwrap_or(1);
-    let requested_memory_mb = match args.mem {
-        Some(value) => parse_mem_mb(&value)?,
-        None => 512,
-    };
-    let requested_gpus = args
-        .gpus
-        .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
-    let time_limit_secs = args
-        .time
-        .as_deref()
-        .map(parse_time_limit_secs)
-        .transpose()?;
 
     let request = SubmitRequest {
-        name: args.job_name.or_else(|| Some("salloc".to_string())),
+        name: resolved.job_name.or_else(|| Some("salloc".to_string())),
         user_name: current_user_name(),
-        partition,
-        cwd: cwd.clone(),
+        partition: resolved.partition,
+        cwd: resolved.cwd.clone(),
         script_name: command_name.clone(),
         script_body: String::new(),
         command_override: Some(shell_join(&command)),
-        requested_cpus,
-        requested_tasks,
-        requested_memory_mb,
-        requested_gpus,
+        requested_cpus: resolved.requested_cpus,
+        requested_tasks: resolved.requested_tasks,
+        requested_memory_mb: resolved.requested_memory_mb,
+        requested_gpus: resolved.requested_gpus,
         allocation_only: true,
         dependency: None,
         array_spec: None,
-        time_limit_secs,
+        time_limit_secs: resolved.time_limit_secs,
         stdout_path: None,
         stderr_path: None,
     };
@@ -571,11 +560,18 @@ fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
 
 fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
     if !args.entity.eq_ignore_ascii_case("job") {
-        return Err(SlotdError::from("supported syntax: scontrol <action> job <job_id>"));
+        return Err(SlotdError::from(
+            "supported syntax: scontrol <action> job <job_id>",
+        ));
     }
 
     if args.action.eq_ignore_ascii_case("hold") {
-        return match send_request(&config, &Request::HoldJob { job_id: args.job_id })? {
+        return match send_request(
+            &config,
+            &Request::HoldJob {
+                job_id: args.job_id,
+            },
+        )? {
             Response::Submitted { .. } => Ok(()),
             Response::Error { message } => Err(SlotdError::from(message)),
             other => Err(SlotdError::from(format!(
@@ -585,7 +581,12 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
     }
 
     if args.action.eq_ignore_ascii_case("release") {
-        return match send_request(&config, &Request::ReleaseJob { job_id: args.job_id })? {
+        return match send_request(
+            &config,
+            &Request::ReleaseJob {
+                job_id: args.job_id,
+            },
+        )? {
             Response::Submitted { .. } => Ok(()),
             Response::Error { message } => Err(SlotdError::from(message)),
             other => Err(SlotdError::from(format!(
@@ -601,7 +602,9 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
         let mut priority = None;
         for update in &args.updates {
             let Some((key, value)) = update.split_once('=') else {
-                return Err(SlotdError::from(format!("invalid update expression: {update}")));
+                return Err(SlotdError::from(format!(
+                    "invalid update expression: {update}"
+                )));
             };
             match key.to_ascii_lowercase().as_str() {
                 "jobname" | "name" => name = Some(value.to_string()),
@@ -636,7 +639,9 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
     }
 
     if !args.action.eq_ignore_ascii_case("show") {
-        return Err(SlotdError::from("supported syntax: scontrol show|hold|release|update job <job_id>"));
+        return Err(SlotdError::from(
+            "supported syntax: scontrol show|hold|release|update job <job_id>",
+        ));
     }
 
     match send_request(
@@ -715,12 +720,7 @@ fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
 
 fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
     let job_id = resolve_job_reference(&config, &args.job_id)?;
-    match send_request(
-        &config,
-        &Request::Cancel {
-            job_id,
-        },
-    )? {
+    match send_request(&config, &Request::Cancel { job_id })? {
         Response::Cancelled { job_id } => {
             println!("Cancelled job {job_id}");
             Ok(())
@@ -1055,7 +1055,11 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
     run_foreground_allocation_with_mode(config, &job, &spec.command, true)
 }
 
-fn start_step_record(config: &AppConfig, parent: &JobRecord, command: &[String]) -> Result<JobRecord> {
+fn start_step_record(
+    config: &AppConfig,
+    parent: &JobRecord,
+    command: &[String],
+) -> Result<JobRecord> {
     let step_job_id = match send_request(
         config,
         &Request::StartStep {
@@ -1076,7 +1080,12 @@ fn start_step_record(config: &AppConfig, parent: &JobRecord, command: &[String])
         }
     };
 
-    match send_request(config, &Request::GetJob { job_id: step_job_id })? {
+    match send_request(
+        config,
+        &Request::GetJob {
+            job_id: step_job_id,
+        },
+    )? {
         Response::Job { job: Some(job) } => Ok(job),
         Response::Job { job: None } => {
             Err(SlotdError::from(format!("step {step_job_id} disappeared")))
@@ -1106,10 +1115,7 @@ fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     if let Some(array_task_id) = job.array_task_id {
         command.env("SLURM_ARRAY_TASK_ID", array_task_id.to_string());
     }
-    command.env(
-        "SLURM_STEP_ID",
-        job.step_id.unwrap_or(0).to_string(),
-    );
+    command.env("SLURM_STEP_ID", job.step_id.unwrap_or(0).to_string());
 }
 
 fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
@@ -1660,9 +1666,14 @@ fn setup_local_cgroup(
     std::fs::create_dir_all(&path)?;
     std::fs::write(
         path.join("memory.max"),
-        job.requested_memory_mb.saturating_mul(1024 * 1024).to_string(),
+        job.requested_memory_mb
+            .saturating_mul(1024 * 1024)
+            .to_string(),
     )?;
-    let requested_cpus = job.requested_cpus.saturating_mul(job.requested_tasks).max(1);
+    let requested_cpus = job
+        .requested_cpus
+        .saturating_mul(job.requested_tasks)
+        .max(1);
     let quota = 100_000u64
         .saturating_mul(requested_cpus as u64)
         .checked_div(config.total_cpus.max(1) as u64)
@@ -1698,7 +1709,14 @@ fn cleanup_local_cgroup(path: Option<&Path>) {
 mod tests {
     use std::ffi::OsString;
 
-    use super::{dispatch_argv0, format_duration_secs, format_timestamp, parse_time_filter};
+    use clap::CommandFactory;
+
+    use super::{
+        CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
+        SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
+        parse_time_filter,
+    };
+    use crate::config::AppConfig;
 
     #[test]
     fn argv0_dispatch_inserts_slurm_alias() {
@@ -1706,6 +1724,69 @@ mod tests {
         let dispatched = dispatch_argv0(argv);
         assert_eq!(dispatched[1], OsString::from("squeue"));
         assert_eq!(dispatched[2], OsString::from("--noheader"));
+    }
+
+    #[test]
+    fn phase0_supported_commands_are_explicitly_fixed() {
+        let command = Cli::command();
+        let names = command
+            .get_subcommands()
+            .map(|subcommand| subcommand.get_name())
+            .collect::<Vec<_>>();
+        assert_eq!(names, SUPPORTED_ROOT_COMMANDS);
+
+        let user_commands = names
+            .iter()
+            .copied()
+            .filter(|name| *name != "daemon")
+            .collect::<Vec<_>>();
+        assert_eq!(user_commands, SUPPORTED_USER_COMMANDS);
+    }
+
+    #[test]
+    fn phase0_core_resource_flags_are_shared_across_submission_commands() {
+        let command = Cli::command();
+        for subcommand_name in ["sbatch", "srun", "salloc"] {
+            let subcommand = command
+                .get_subcommands()
+                .find(|subcommand| subcommand.get_name() == subcommand_name)
+                .expect("subcommand exists");
+            let option_names = subcommand
+                .get_arguments()
+                .filter_map(|argument| argument.get_long())
+                .collect::<Vec<_>>();
+            for flag in CORE_RESOURCE_LONG_FLAGS {
+                assert!(
+                    option_names.contains(flag),
+                    "{subcommand_name} is missing shared resource flag --{flag}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn phase0_resource_model_uses_one_shared_defaulting_path() {
+        let config = AppConfig::load();
+        let args = ResourceArgs {
+            job_name: Some("demo".to_string()),
+            partition: Some(config.default_partition().to_string()),
+            cpus_per_task: Some(4),
+            ntasks: Some(2),
+            mem: Some("2G".to_string()),
+            time: Some("00:30:00".to_string()),
+            gpus: Some(0),
+            chdir: Some("/tmp".into()),
+        };
+
+        let resolved = args.resolve(&config, None).expect("resource args resolve");
+        assert_eq!(resolved.job_name.as_deref(), Some("demo"));
+        assert_eq!(resolved.partition, config.default_partition());
+        assert_eq!(resolved.cwd, "/tmp");
+        assert_eq!(resolved.requested_cpus, 4);
+        assert_eq!(resolved.requested_tasks, 2);
+        assert_eq!(resolved.requested_memory_mb, 2048);
+        assert_eq!(resolved.requested_gpus, 0);
+        assert_eq!(resolved.time_limit_secs, Some(1800));
     }
 
     #[test]
