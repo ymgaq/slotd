@@ -1,5 +1,6 @@
 use std::ffi::OsString;
 use std::fs;
+use std::fs::OpenOptions;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -88,6 +89,15 @@ struct ResolvedResourceArgs {
     requested_memory_mb: u64,
     requested_gpus: u32,
     time_limit_secs: Option<u64>,
+}
+
+#[derive(Debug, Default, Clone)]
+struct SbatchEnvOverrides {
+    directives: BatchDirectives,
+    export: Option<String>,
+    export_file: Option<PathBuf>,
+    open_mode: Option<String>,
+    signal: Option<String>,
 }
 
 impl ResourceArgs {
@@ -350,17 +360,24 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
             .to_string();
         (script_name, script_body, directives, None)
     };
-    let resolved = args.resources.resolve(&config, Some(&directives))?;
-    let export_env = resolve_export_env(args.export.as_deref(), args.export_file.as_deref())?;
+    let env_overrides = load_sbatch_env_overrides();
+    let defaults = merge_batch_directives(&directives, &env_overrides.directives);
+    let resolved = args.resources.resolve(&config, Some(&defaults))?;
+    let export_env = resolve_export_env(
+        args.export.as_deref().or(env_overrides.export.as_deref()),
+        args.export_file.as_deref().or(env_overrides.export_file.as_deref()),
+    )?;
     let open_mode = args
         .open_mode
         .as_deref()
+        .or(env_overrides.open_mode.as_deref())
         .unwrap_or("truncate")
         .parse::<OpenMode>()
         .map_err(SlotdError::from)?;
     let warning_signal = args
         .signal
         .as_deref()
+        .or(env_overrides.signal.as_deref())
         .map(parse_warning_signal)
         .transpose()?;
 
@@ -377,17 +394,17 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         requested_memory_mb: resolved.requested_memory_mb,
         requested_gpus: resolved.requested_gpus,
         allocation_only: false,
-        dependency: args.dependency.or(directives.dependency),
-        array_spec: args.array.or(directives.array_spec),
+        dependency: args.dependency.or(defaults.dependency),
+        array_spec: args.array.or(defaults.array_spec),
         time_limit_secs: resolved.time_limit_secs,
         stdout_path: args
             .output
             .map(|path| path.to_string_lossy().to_string())
-            .or(directives.output_path),
+            .or(defaults.output_path),
         stderr_path: args
             .error
             .map(|path| path.to_string_lossy().to_string())
-            .or(directives.error_path),
+            .or(defaults.error_path),
         export_env,
         open_mode,
         warning_signal,
@@ -415,7 +432,13 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
 
 fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
     if let Some(job) = current_allocation_job(&config)? {
-        return run_foreground_step(&config, &job, &args.command);
+        return run_foreground_step(
+            &config,
+            &job,
+            &args.command,
+            args.output.as_deref(),
+            args.error.as_deref(),
+        );
     }
 
     let resolved = args.resources.resolve(&config, None)?;
@@ -426,7 +449,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         .unwrap_or_else(|| "srun".to_string());
     let command_override = shell_join(&args.command);
 
-    if !args.no_wait && (args.pty || (args.output.is_none() && args.error.is_none())) {
+    if !args.no_wait {
         return run_interactive_srun(
             &config,
             InteractiveRunSpec {
@@ -439,6 +462,8 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
                 requested_gpus: resolved.requested_gpus,
                 time_limit_secs: resolved.time_limit_secs,
                 immediate: args.immediate,
+                stdout_path: args.output,
+                stderr_path: args.error,
                 command: args.command,
             },
         );
@@ -496,13 +521,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         return Ok(());
     }
 
-    let job = wait_for_job_completion(&config, job_id)?;
-    replay_srun_output(&job, args.output.is_none(), args.error.is_none())?;
-
-    match job.state {
-        JobState::Completed => Ok(()),
-        _ => Err(SlotdError::Exit(job.exit_code.unwrap_or(1))),
-    }
+    Ok(())
 }
 
 fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
@@ -656,7 +675,6 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
         let mut name = None;
         let mut partition = None;
         let mut time_limit_secs = None;
-        let mut priority = None;
         for update in &args.updates {
             let Some((key, value)) = update.split_once('=') else {
                 return Err(SlotdError::from(format!(
@@ -667,13 +685,6 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
                 "jobname" | "name" => name = Some(value.to_string()),
                 "partition" => partition = Some(value.to_string()),
                 "timelimit" | "time" => time_limit_secs = Some(parse_time_limit_secs(value)?),
-                "priority" => {
-                    priority = Some(
-                        value
-                            .parse::<i32>()
-                            .map_err(|_| SlotdError::from(format!("invalid priority: {value}")))?,
-                    )
-                }
                 other => return Err(SlotdError::from(format!("unsupported update key: {other}"))),
             }
         }
@@ -684,7 +695,6 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
                 name,
                 partition,
                 time_limit_secs,
-                priority,
             },
         )? {
             Response::Submitted { .. } => Ok(()),
@@ -697,7 +707,7 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
 
     if !args.action.eq_ignore_ascii_case("show") {
         return Err(SlotdError::from(
-            "supported syntax: scontrol show|hold|release|update job <job_id>",
+            "supported syntax: scontrol show|hold|release|update job <job_id>; update keys: JobName, Partition, TimeLimit",
         ));
     }
 
@@ -913,7 +923,7 @@ fn run_foreground_allocation(
     job: &JobRecord,
     command: &[String],
 ) -> Result<()> {
-    run_foreground_allocation_with_mode(config, job, command, false)
+    run_foreground_allocation_with_mode(config, job, command, false, None, None)
 }
 
 fn run_foreground_allocation_with_mode(
@@ -921,6 +931,8 @@ fn run_foreground_allocation_with_mode(
     job: &JobRecord,
     command: &[String],
     record_step: bool,
+    stdout_path: Option<&Path>,
+    stderr_path: Option<&Path>,
 ) -> Result<()> {
     let step_record = if record_step {
         Some(start_step_record(config, job, command)?)
@@ -931,8 +943,7 @@ fn run_foreground_allocation_with_mode(
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
     child.stdin(Stdio::inherit());
-    child.stdout(Stdio::inherit());
-    child.stderr(Stdio::inherit());
+    apply_foreground_stdio(&mut child, &job.cwd, stdout_path, stderr_path)?;
     apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
     unsafe {
         child.pre_exec(|| {
@@ -1056,22 +1067,6 @@ fn run_foreground_allocation_with_mode(
     }
 }
 
-fn replay_srun_output(job: &JobRecord, replay_stdout: bool, replay_stderr: bool) -> Result<()> {
-    if replay_stdout {
-        let stdout = fs::read_to_string(&job.stdout_path).unwrap_or_default();
-        if !stdout.is_empty() {
-            print!("{stdout}");
-        }
-    }
-    if replay_stderr && job.stderr_path != job.stdout_path {
-        let stderr = fs::read_to_string(&job.stderr_path).unwrap_or_default();
-        if !stderr.is_empty() {
-            eprint!("{stderr}");
-        }
-    }
-    Ok(())
-}
-
 struct InteractiveRunSpec {
     name: Option<String>,
     partition: String,
@@ -1082,6 +1077,8 @@ struct InteractiveRunSpec {
     requested_gpus: u32,
     time_limit_secs: Option<u64>,
     immediate: bool,
+    stdout_path: Option<PathBuf>,
+    stderr_path: Option<PathBuf>,
     command: Vec<String>,
 }
 
@@ -1126,7 +1123,14 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
     };
 
     let job = wait_for_job_running(config, job_id)?;
-    run_foreground_allocation_with_mode(config, &job, &spec.command, true)
+    run_foreground_allocation_with_mode(
+        config,
+        &job,
+        &spec.command,
+        true,
+        spec.stdout_path.as_deref(),
+        spec.stderr_path.as_deref(),
+    )
 }
 
 fn start_step_record(
@@ -1192,6 +1196,49 @@ fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     command.env("SLURM_STEP_ID", job.step_id.unwrap_or(0).to_string());
 }
 
+fn apply_foreground_stdio(
+    command: &mut Command,
+    cwd: &str,
+    stdout_path: Option<&Path>,
+    stderr_path: Option<&Path>,
+) -> Result<()> {
+    let stdout = open_foreground_stdio(stdout_path, cwd, "/dev/stdout")?;
+    let stderr = if same_path(stdout_path, stderr_path) {
+        stdout.try_clone()?
+    } else {
+        open_foreground_stdio(stderr_path, cwd, "/dev/stderr")?
+    };
+    command.stdout(Stdio::from(stdout));
+    command.stderr(Stdio::from(stderr));
+    Ok(())
+}
+
+fn open_foreground_stdio(path: Option<&Path>, cwd: &str, fallback: &str) -> Result<std::fs::File> {
+    let Some(path) = path else {
+        return open_stdio_handle(fallback);
+    };
+    let resolved = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        Path::new(cwd).join(path)
+    };
+    let mut options = OpenOptions::new();
+    options.create(true).write(true).truncate(true);
+    Ok(options.open(resolved)?)
+}
+
+fn same_path(stdout_path: Option<&Path>, stderr_path: Option<&Path>) -> bool {
+    match (stdout_path, stderr_path) {
+        (None, None) => true,
+        (Some(left), Some(right)) => left == right,
+        _ => false,
+    }
+}
+
+fn open_stdio_handle(path: &str) -> Result<std::fs::File> {
+    Ok(OpenOptions::new().write(true).open(path)?)
+}
+
 fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
     let Ok(value) = std::env::var("SLURM_JOB_ID") else {
         return Ok(None);
@@ -1214,14 +1261,19 @@ fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
     }
 }
 
-fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) -> Result<()> {
+fn run_foreground_step(
+    config: &AppConfig,
+    job: &JobRecord,
+    command: &[String],
+    stdout_path: Option<&Path>,
+    stderr_path: Option<&Path>,
+) -> Result<()> {
     let step = start_step_record(config, job, command)?;
     let mut child = Command::new(&command[0]);
     child.args(&command[1..]);
     child.current_dir(&job.cwd);
     child.stdin(Stdio::inherit());
-    child.stdout(Stdio::inherit());
-    child.stderr(Stdio::inherit());
+    apply_foreground_stdio(&mut child, &job.cwd, stdout_path, stderr_path)?;
     apply_slurm_env(&mut child, config, &step);
     unsafe {
         child.pre_exec(|| {
@@ -1459,6 +1511,73 @@ fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
         .into_iter()
         .map(|value| parse_state(&value))
         .collect()
+}
+
+fn load_sbatch_env_overrides() -> SbatchEnvOverrides {
+    load_sbatch_env_overrides_with(|name| std::env::var(name).ok())
+}
+
+fn load_sbatch_env_overrides_with<F>(get: F) -> SbatchEnvOverrides
+where
+    F: Fn(&str) -> Option<String>,
+{
+    let mut directives = BatchDirectives::default();
+    directives.job_name = get("SBATCH_JOB_NAME");
+    directives.partition = get("SBATCH_PARTITION");
+    directives.cpus_per_task = get("SBATCH_CPUS_PER_TASK").and_then(|value| value.parse().ok());
+    directives.ntasks = get("SBATCH_NTASKS").and_then(|value| value.parse().ok());
+    directives.mem_mb = get("SBATCH_MEM").and_then(|value| parse_mem_mb(&value).ok());
+    directives.time_limit_secs =
+        get("SBATCH_TIME").and_then(|value| parse_time_limit_secs(&value).ok());
+    directives.gpus = get("SBATCH_GPUS").and_then(|value| value.parse().ok());
+    directives.output_path = get("SBATCH_OUTPUT");
+    directives.error_path = get("SBATCH_ERROR");
+    directives.chdir = get("SBATCH_CHDIR");
+    directives.dependency = get("SBATCH_DEPENDENCY");
+    directives.array_spec = get("SBATCH_ARRAY_INX");
+
+    SbatchEnvOverrides {
+        directives,
+        export: get("SBATCH_EXPORT"),
+        export_file: get("SBATCH_EXPORT_FILE").map(PathBuf::from),
+        open_mode: get("SBATCH_OPEN_MODE"),
+        signal: get("SBATCH_SIGNAL"),
+    }
+}
+
+fn merge_batch_directives(
+    directives: &BatchDirectives,
+    overrides: &BatchDirectives,
+) -> BatchDirectives {
+    BatchDirectives {
+        job_name: overrides.job_name.clone().or_else(|| directives.job_name.clone()),
+        partition: overrides
+            .partition
+            .clone()
+            .or_else(|| directives.partition.clone()),
+        cpus_per_task: overrides.cpus_per_task.or(directives.cpus_per_task),
+        ntasks: overrides.ntasks.or(directives.ntasks),
+        mem_mb: overrides.mem_mb.or(directives.mem_mb),
+        gpus: overrides.gpus.or(directives.gpus),
+        time_limit_secs: overrides.time_limit_secs.or(directives.time_limit_secs),
+        dependency: overrides
+            .dependency
+            .clone()
+            .or_else(|| directives.dependency.clone()),
+        array_spec: overrides
+            .array_spec
+            .clone()
+            .or_else(|| directives.array_spec.clone()),
+        output_path: overrides
+            .output_path
+            .clone()
+            .or_else(|| directives.output_path.clone()),
+        error_path: overrides
+            .error_path
+            .clone()
+            .or_else(|| directives.error_path.clone()),
+        chdir: overrides.chdir.clone().or_else(|| directives.chdir.clone()),
+    }
 }
 
 fn resolve_export_env(export: Option<&str>, export_file: Option<&Path>) -> Result<Vec<(String, String)>> {
@@ -1972,7 +2091,8 @@ mod tests {
     use super::{
         CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
-        parse_signal_name, parse_time_filter, parse_warning_signal, resolve_export_spec,
+        load_sbatch_env_overrides_with, merge_batch_directives, parse_signal_name,
+        parse_time_filter, parse_warning_signal, resolve_export_spec,
     };
     use crate::config::AppConfig;
     use crate::job::{JobRecord, JobState, OpenMode};
@@ -2087,6 +2207,44 @@ mod tests {
         assert_eq!(resolved.requested_memory_mb, 2048);
         assert_eq!(resolved.requested_gpus, 0);
         assert_eq!(resolved.time_limit_secs, Some(1800));
+    }
+
+    #[test]
+    fn phase15_sbatch_environment_overrides_directives() {
+        let env = load_sbatch_env_overrides_with(|name| match name {
+            "SBATCH_PARTITION" => Some("cpu".to_string()),
+            "SBATCH_CPUS_PER_TASK" => Some("8".to_string()),
+            "SBATCH_TIME" => Some("01:00:00".to_string()),
+            "SBATCH_OUTPUT" => Some("from-env.out".to_string()),
+            _ => None,
+        });
+        let directives = BatchDirectives {
+            partition: Some("gpu".to_string()),
+            cpus_per_task: Some(2),
+            time_limit_secs: Some(300),
+            output_path: Some("from-directive.out".to_string()),
+            ..BatchDirectives::default()
+        };
+        let merged = merge_batch_directives(&directives, &env.directives);
+        assert_eq!(merged.partition.as_deref(), Some("cpu"));
+        assert_eq!(merged.cpus_per_task, Some(8));
+        assert_eq!(merged.time_limit_secs, Some(3600));
+        assert_eq!(merged.output_path.as_deref(), Some("from-env.out"));
+    }
+
+    #[test]
+    fn phase15_sbatch_environment_keeps_non_overridden_directives() {
+        let env = load_sbatch_env_overrides_with(|_| None);
+        let directives = BatchDirectives {
+            partition: Some("cpu".to_string()),
+            cpus_per_task: Some(2),
+            output_path: Some("from-directive.out".to_string()),
+            ..BatchDirectives::default()
+        };
+        let merged = merge_batch_directives(&directives, &env.directives);
+        assert_eq!(merged.partition.as_deref(), Some("cpu"));
+        assert_eq!(merged.cpus_per_task, Some(2));
+        assert_eq!(merged.output_path.as_deref(), Some("from-directive.out"));
     }
 
     #[test]

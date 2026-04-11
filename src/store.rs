@@ -124,7 +124,7 @@ impl Store {
                 array_task_count.map(|value| value as i64),
                 array_task_limit.map(|value| value as i64),
                 submit_time,
-                "Priority",
+                "Resources",
                 request.time_limit_secs.map(|value| value as i64),
                 serde_json::to_string(&request.export_env)?,
                 request.open_mode.as_str(),
@@ -455,7 +455,7 @@ impl Store {
 
     pub fn release_job(&self, job_id: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE jobs SET held = 0, state_reason = 'Priority' WHERE id = ?1 AND state = 'PENDING'",
+            "UPDATE jobs SET held = 0, state_reason = 'Resources' WHERE id = ?1 AND state = 'PENDING'",
             [job_id],
         )?;
         Ok(())
@@ -467,7 +467,6 @@ impl Store {
         name: Option<&str>,
         partition: Option<&str>,
         time_limit_secs: Option<u64>,
-        priority: Option<i32>,
     ) -> Result<()> {
         let job = self
             .get_job(job_id)?
@@ -498,15 +497,6 @@ impl Store {
             self.conn.execute(
                 "UPDATE jobs SET time_limit_secs = ?1 WHERE id = ?2",
                 params![value as i64, job_id],
-            )?;
-        }
-        if let Some(value) = priority {
-            if job.state != JobState::Pending {
-                return Err(SlotdError::from("priority can only be updated while pending"));
-            }
-            self.conn.execute(
-                "UPDATE jobs SET priority = ?1 WHERE id = ?2",
-                params![value, job_id],
             )?;
         }
         Ok(())
@@ -958,13 +948,9 @@ fn next_step_id_query(conn: &Connection, parent_job_id: i64) -> Result<u32> {
 }
 
 fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
-    let now = now_ts();
     jobs.sort_by(|a, b| {
-        let a_score = effective_priority(a, now);
-        let b_score = effective_priority(b, now);
-        b_score
-            .cmp(&a_score)
-            .then_with(|| a.submit_time.cmp(&b.submit_time))
+        a.submit_time
+            .cmp(&b.submit_time)
             .then_with(|| a.id.cmp(&b.id))
     });
 
@@ -978,17 +964,17 @@ fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
         .iter()
         .map(|(group_key, group_jobs)| {
             let top = &group_jobs[0];
-            (*group_key, effective_priority(top, now), top.submit_time, top.id)
+            (*group_key, top.submit_time, top.id)
         })
         .collect::<Vec<_>>();
 
     let mut group_order = group_order;
-    group_order.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.cmp(&b.3)));
+    group_order.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.2.cmp(&b.2)));
 
     let mut ordered = Vec::new();
     loop {
         let mut progressed = false;
-        for (group_key, _, _, _) in &group_order {
+        for (group_key, _, _) in &group_order {
             if let Some(group_jobs) = grouped.get_mut(group_key) {
                 if !group_jobs.is_empty() {
                     ordered.push(group_jobs.remove(0));
@@ -1003,15 +989,9 @@ fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
 
     ordered
 }
-
-fn effective_priority(job: &JobRecord, now: i64) -> i64 {
-    let age_bonus = now.saturating_sub(job.submit_time) / 60;
-    job.priority as i64 + age_bonus
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{effective_priority, order_pending_jobs};
+    use super::order_pending_jobs;
     use crate::job::{JobRecord, JobState, OpenMode};
 
     fn pending_job(id: i64, array_job_id: Option<i64>, priority: i32, submit_time: i64) -> JobRecord {
@@ -1070,11 +1050,10 @@ mod tests {
     }
 
     #[test]
-    fn scheduler_prefers_higher_effective_priority() {
-        let newer = pending_job(10, None, 100, 100);
-        let older = pending_job(11, None, 0, 0);
-        assert!(effective_priority(&newer, 100) > effective_priority(&older, 100));
-        let ordered = order_pending_jobs(vec![older, newer]);
+    fn scheduler_prefers_earlier_submission_for_single_user_fifo() {
+        let older = pending_job(10, None, 100, 0);
+        let newer = pending_job(11, None, 0, 100);
+        let ordered = order_pending_jobs(vec![newer, older]);
         assert_eq!(ordered[0].id, 10);
     }
 }

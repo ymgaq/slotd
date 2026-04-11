@@ -198,8 +198,7 @@ Pending job admission checks:
 
 Queue ordering:
 
-- jobs are ranked by effective priority
-- effective priority is `priority + age_minutes`
+- jobs are scheduled in FIFO order by submission time
 - pending array tasks are interleaved by array group to reduce starvation
 
 ## Batch Script Parsing
@@ -386,11 +385,11 @@ Execution modes:
 
 - inside an active allocation:
   - `srun` creates a step record and runs the command directly in the foreground
-- outside an allocation, with no explicit `-o/-e`, or with `--pty`:
+- outside an allocation:
   - `srun` creates an allocation-like record, waits for it to run, then runs the command directly in the foreground
   - a step record is also created for accounting
-- outside an allocation, with explicit output files or `--no-wait`:
-  - `srun` submits a daemon-managed command job
+  - `-o/-e` only change where foreground output is written
+  - only `--no-wait` submits a daemon-managed command job
 
 Behavior details:
 
@@ -398,7 +397,6 @@ Behavior details:
 - default job name is the command basename
 - `--immediate` fails if resources are not available immediately
 - `--pty` currently selects the foreground execution path; it does not implement terminal allocation features beyond direct foreground execution
-- daemon-managed `srun` waits by default and replays captured stdout/stderr on completion
 - daemon-managed `srun --no-wait` prints `Submitted run job <id>`
 - nonzero exit codes are propagated back to the caller
 
@@ -596,13 +594,11 @@ Supported update keys:
 - `JobName` or `Name`
 - `Partition`
 - `TimeLimit` or `Time`
-- `Priority`
 
 Current mutability rules:
 
 - `JobName` can only be changed while `PENDING`
 - `Partition` can only be changed while `PENDING`
-- `Priority` can only be changed while `PENDING`
 - `TimeLimit` can be changed until the job reaches a terminal state
 
 `show job` output includes:

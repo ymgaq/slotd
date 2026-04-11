@@ -197,6 +197,10 @@ Supported CLI options:
 - `-D`, `--chdir`
 - `-d`, `--dependency`
 - `-a`, `--array`
+- `--export`
+- `--export-file`
+- `--open-mode`
+- `--signal`
 - `--parsable`
 - `-W`, `--wait`
 
@@ -222,7 +226,8 @@ Directive parsing behavior:
 
 Precedence:
 
-- explicit CLI options override `#SBATCH` directives
+- explicit CLI options override matching `SBATCH_*` environment variables
+- matching `SBATCH_*` environment variables override `#SBATCH` directives
 - `#SBATCH` directives override built-in defaults
 
 Currently implemented output path behavior:
@@ -258,10 +263,11 @@ Not implemented yet:
 `srun` currently works as follows:
 
 - accepts a direct command after `--`
-- when stdout and stderr are not redirected, acquires an allocation and runs the command in the foreground with inherited stdio
-- supports `--pty` as a foreground interactive mode on top of the same allocation path
+- acquires an allocation and runs the command in the foreground by default
 - when `SLURM_JOB_ID` points at a running allocation-only job, runs as a local step inside that allocation instead of submitting a new job
-- falls back to daemon-launched batch-style execution when output files are requested or `--no-wait` is used
+- `-o/-e` redirect the foreground command directly instead of switching to daemon-managed execution
+- `--pty` uses the same foreground execution path
+- only `--no-wait` uses daemon-managed asynchronous submission
 - returns the command exit code through the `slotd` process exit code
 
 Supported options:
