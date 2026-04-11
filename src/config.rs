@@ -1,5 +1,6 @@
 use std::env;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -215,10 +216,7 @@ struct DetectedGpuInfo {
 }
 
 fn detect_gpu_info() -> DetectedGpuInfo {
-    let Ok(output) = Command::new("nvidia-smi")
-        .args(["--query-gpu=name", "--format=csv,noheader"])
-        .output()
-    else {
+    let Some(output) = run_nvidia_smi_query() else {
         return DetectedGpuInfo {
             count: None,
             model: None,
@@ -245,6 +243,30 @@ fn detect_gpu_info() -> DetectedGpuInfo {
     DetectedGpuInfo { count, model }
 }
 
+fn run_nvidia_smi_query() -> Option<std::process::Output> {
+    for candidate in nvidia_smi_candidates() {
+        if candidate.contains('/') && !Path::new(candidate).exists() {
+            continue;
+        }
+        if let Ok(output) = Command::new(candidate)
+            .args(["--query-gpu=name", "--format=csv,noheader"])
+            .output()
+        {
+            return Some(output);
+        }
+    }
+    None
+}
+
+fn nvidia_smi_candidates() -> &'static [&'static str] {
+    &[
+        "nvidia-smi",
+        "/usr/bin/nvidia-smi",
+        "/usr/lib/wsl/lib/nvidia-smi",
+        "/bin/nvidia-smi",
+    ]
+}
+
 fn normalize_gpu_name(value: &str) -> String {
     let trimmed = value.trim().trim_start_matches("NVIDIA ").trim();
     if trimmed.eq_ignore_ascii_case("H200") {
@@ -258,4 +280,16 @@ fn normalize_gpu_name(value: &str) -> String {
         .replace("GTX ", "GTX")
         .replace("  ", " ");
     compact.split_whitespace().collect::<String>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::nvidia_smi_candidates;
+
+    #[test]
+    fn includes_common_nvidia_smi_locations() {
+        let candidates = nvidia_smi_candidates();
+        assert!(candidates.contains(&"nvidia-smi"));
+        assert!(candidates.contains(&"/usr/lib/wsl/lib/nvidia-smi"));
+    }
 }
