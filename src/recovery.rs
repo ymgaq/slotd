@@ -7,7 +7,7 @@ pub fn recover(store: &Store, runner: &mut Runner) -> Result<()> {
     for job in store.list_running_jobs()? {
         if let Some(pgid) = job.pgid.or(job.pid) {
             if process_group_alive_for_recovery(pgid)? {
-                runner.adopt(&job);
+                runner.adopt(store.config(), &job);
             } else {
                 store.mark_finished(
                     job.id,

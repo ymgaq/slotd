@@ -1,7 +1,7 @@
 use std::ffi::OsString;
 use std::fs;
 use std::os::unix::process::CommandExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -791,6 +791,19 @@ fn run_foreground_allocation_with_mode(
     let mut child = child.spawn()?;
     let pid = child.id() as i32;
     let pgid = pid;
+    let local_cgroup = match setup_local_cgroup(
+        config,
+        step_record.as_ref().map(|step| step.id).unwrap_or(job.id),
+        step_record.as_ref().unwrap_or(job),
+        pid,
+    ) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     match send_request(
         config,
         &Request::AdoptAllocation {
@@ -834,7 +847,14 @@ fn run_foreground_allocation_with_mode(
     let status = child.wait()?;
     let exit_code = status.code();
     let term_signal = exit_signal(&status);
-    let (state, reason) = allocation_terminal_state(exit_code, term_signal);
+    let (state, reason) = allocation_terminal_state(
+        exit_code,
+        term_signal,
+        local_cgroup
+            .as_deref()
+            .map(local_cgroup_oomed)
+            .unwrap_or(false),
+    );
     match send_request(
         config,
         &Request::FinishAllocation {
@@ -876,6 +896,7 @@ fn run_foreground_allocation_with_mode(
             }
         }
     }
+    cleanup_local_cgroup(local_cgroup.as_deref());
 
     match state {
         JobState::Completed => Ok(()),
@@ -1044,6 +1065,14 @@ fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) 
     let mut child = child.spawn()?;
     let pid = child.id() as i32;
     let pgid = pid;
+    let local_cgroup = match setup_local_cgroup(config, step.id, &step, pid) {
+        Ok(path) => path,
+        Err(error) => {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(error);
+        }
+    };
     match send_request(
         config,
         &Request::AdoptAllocation {
@@ -1064,7 +1093,14 @@ fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) 
     let status = child.wait()?;
     let exit_code = status.code();
     let term_signal = exit_signal(&status);
-    let (state, reason) = allocation_terminal_state(exit_code, term_signal);
+    let (state, reason) = allocation_terminal_state(
+        exit_code,
+        term_signal,
+        local_cgroup
+            .as_deref()
+            .map(local_cgroup_oomed)
+            .unwrap_or(false),
+    );
     match send_request(
         config,
         &Request::FinishAllocation {
@@ -1084,6 +1120,7 @@ fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) 
             )));
         }
     }
+    cleanup_local_cgroup(local_cgroup.as_deref());
     match status.code() {
         Some(0) => Ok(()),
         Some(code) => Err(SlotdError::Exit(code)),
@@ -1226,7 +1263,11 @@ fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
 fn allocation_terminal_state(
     exit_code: Option<i32>,
     term_signal: Option<i32>,
+    cgroup_oom: bool,
 ) -> (JobState, &'static str) {
+    if cgroup_oom {
+        return (JobState::OutOfMemory, "OutOfMemory");
+    }
     match (exit_code, term_signal) {
         (Some(0), None) => (JobState::Completed, "Completed"),
         (Some(_), None) => (JobState::Failed, "NonZeroExitCode"),
@@ -1462,6 +1503,53 @@ fn format_job_alloc_tres(config: &AppConfig, job: &JobRecord) -> String {
         values.push(format!("gres/gpu={}", job.requested_gpus));
     }
     values.join(",")
+}
+
+fn setup_local_cgroup(
+    config: &AppConfig,
+    job_id: i64,
+    job: &JobRecord,
+    pid: i32,
+) -> Result<Option<PathBuf>> {
+    let Some(base) = &config.cgroup_base else {
+        return Ok(None);
+    };
+    let path = base.join(format!("slotd-{job_id}"));
+    std::fs::create_dir_all(&path)?;
+    std::fs::write(
+        path.join("memory.max"),
+        job.requested_memory_mb.saturating_mul(1024 * 1024).to_string(),
+    )?;
+    let requested_cpus = job.requested_cpus.saturating_mul(job.requested_tasks).max(1);
+    let quota = 100_000u64
+        .saturating_mul(requested_cpus as u64)
+        .checked_div(config.total_cpus.max(1) as u64)
+        .unwrap_or(100_000)
+        .max(1);
+    std::fs::write(path.join("cpu.max"), format!("{quota} 100000"))?;
+    std::fs::write(path.join("cgroup.procs"), pid.to_string())?;
+    Ok(Some(path))
+}
+
+fn local_cgroup_oomed(path: &Path) -> bool {
+    let Ok(contents) = std::fs::read_to_string(path.join("memory.events")) else {
+        return false;
+    };
+    contents.lines().any(|line| {
+        let mut parts = line.split_whitespace();
+        matches!(parts.next(), Some("oom_kill") | Some("oom"))
+            && parts
+                .next()
+                .and_then(|value| value.parse::<u64>().ok())
+                .unwrap_or(0)
+                > 0
+    })
+}
+
+fn cleanup_local_cgroup(path: Option<&Path>) {
+    if let Some(path) = path {
+        let _ = std::fs::remove_dir(path);
+    }
 }
 
 #[cfg(test)]

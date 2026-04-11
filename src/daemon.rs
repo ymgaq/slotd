@@ -85,7 +85,7 @@ fn handle_stream(
         Request::AdoptAllocation { job_id, pid, pgid } => {
             store.adopt_allocation(job_id, pid, pgid)?;
             if let Some(job) = store.get_job(job_id)? {
-                runner.adopt(&job);
+                runner.adopt(config, &job);
             }
             Response::Submitted { job_id }
         }

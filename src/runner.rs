@@ -99,7 +99,7 @@ impl Runner {
         Ok(())
     }
 
-    pub fn adopt(&mut self, job: &JobRecord) {
+    pub fn adopt(&mut self, config: &AppConfig, job: &JobRecord) {
         let pgid = job.pgid.or(job.pid).unwrap_or_default();
         if pgid <= 0 {
             return;
@@ -110,7 +110,7 @@ impl Runner {
             RunningJob {
                 pgid,
                 pid: job.pid.unwrap_or_default(),
-                cgroup_path: None,
+                cgroup_path: job_cgroup_path(config, job.id),
                 handle: JobHandle::Adopted,
             },
         );
@@ -121,13 +121,13 @@ impl Runner {
         for (&job_id, running) in &self.jobs {
             if let JobHandle::Adopted = running.handle {
                 if !process_group_alive(running.pgid)? {
-                    store.mark_finished(
-                        job_id,
-                        JobState::Failed,
-                        None,
-                        None,
-                        Some("LostAfterRestart"),
-                    )?;
+                    let (state, reason) = if cgroup_oomed(running.cgroup_path.as_deref()) {
+                        (JobState::OutOfMemory, "OutOfMemory")
+                    } else {
+                        (JobState::Failed, "LostAfterRestart")
+                    };
+                    store.mark_finished(job_id, state, None, None, Some(reason))?;
+                    cleanup_cgroup(running.cgroup_path.as_deref());
                     finished.push(job_id);
                 }
             }
