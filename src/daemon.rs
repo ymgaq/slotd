@@ -71,6 +71,30 @@ fn handle_stream(
             Response::Submitted { job_id }
         }
         Request::SubmitRun { request, immediate } => submit_run(store, runner, request, immediate)?,
+        Request::SubmitAlloc { request, immediate } => submit_alloc(store, request, immediate)?,
+        Request::AdoptAllocation { job_id, pid, pgid } => {
+            store.adopt_allocation(job_id, pid, pgid)?;
+            if let Some(job) = store.get_job(job_id)? {
+                runner.adopt(&job);
+            }
+            Response::Submitted { job_id }
+        }
+        Request::FinishAllocation {
+            job_id,
+            state,
+            exit_code,
+            term_signal,
+            state_reason,
+        } => {
+            store.mark_finished(
+                job_id,
+                state,
+                exit_code,
+                term_signal,
+                state_reason.as_deref(),
+            )?;
+            Response::Submitted { job_id }
+        }
         Request::ListJobs {
             states,
             ids,
@@ -132,6 +156,7 @@ fn schedule_pending_jobs(store: &Store, runner: &mut Runner) -> Result<()> {
                 store,
                 &job.partition,
                 job.requested_cpus,
+                job.requested_tasks,
                 job.requested_memory_mb,
                 job.requested_gpus,
             )
@@ -139,7 +164,11 @@ fn schedule_pending_jobs(store: &Store, runner: &mut Runner) -> Result<()> {
         });
 
         if let Some(job) = next_job {
-            runner.launch(store, &job)?;
+            if job.allocation_only {
+                store.mark_allocation_running(job.id)?;
+            } else {
+                runner.launch(store, &job)?;
+            }
         } else {
             break;
         }
@@ -157,6 +186,7 @@ fn submit_run(
         store,
         &request.partition,
         request.requested_cpus,
+        request.requested_tasks,
         request.requested_memory_mb,
         request.requested_gpus,
     )?;
@@ -176,18 +206,43 @@ fn submit_run(
     Ok(Response::Submitted { job_id })
 }
 
+fn submit_alloc(store: &Store, request: SubmitRequest, immediate: bool) -> Result<Response> {
+    let can_start_now = resources_fit(
+        store,
+        &request.partition,
+        request.requested_cpus,
+        request.requested_tasks,
+        request.requested_memory_mb,
+        request.requested_gpus,
+    )?;
+    if immediate && !can_start_now {
+        return Ok(Response::Error {
+            message: "resources are not currently available for --immediate salloc".to_string(),
+        });
+    }
+
+    let job_id = store.create_job(request)?;
+    if can_start_now {
+        store.mark_allocation_running(job_id)?;
+    }
+
+    Ok(Response::Submitted { job_id })
+}
+
 fn resources_fit(
     store: &Store,
     partition: &str,
     requested_cpus: u32,
+    requested_tasks: u32,
     requested_memory_mb: u64,
     requested_gpus: u32,
 ) -> Result<bool> {
     let (available_cpus, available_memory_mb, available_gpus) = store.available_resources()?;
+    let total_requested_cpus = requested_cpus.saturating_mul(requested_tasks);
     let enough_base =
-        requested_cpus <= available_cpus && requested_memory_mb <= available_memory_mb;
+        total_requested_cpus <= available_cpus && requested_memory_mb <= available_memory_mb;
     let enough_gpu = match partition {
-        "gpu" => requested_gpus <= available_gpus,
+        _ if store.config().is_gpu_partition(partition) => requested_gpus <= available_gpus,
         _ => requested_gpus == 0,
     };
     Ok(enough_base && enough_gpu)

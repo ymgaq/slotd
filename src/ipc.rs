@@ -14,6 +14,22 @@ pub enum Request {
         request: SubmitRequest,
         immediate: bool,
     },
+    SubmitAlloc {
+        request: SubmitRequest,
+        immediate: bool,
+    },
+    AdoptAllocation {
+        job_id: i64,
+        pid: i32,
+        pgid: i32,
+    },
+    FinishAllocation {
+        job_id: i64,
+        state: JobState,
+        exit_code: Option<i32>,
+        term_signal: Option<i32>,
+        state_reason: Option<String>,
+    },
     ListJobs {
         states: Option<Vec<JobState>>,
         ids: Option<Vec<i64>>,

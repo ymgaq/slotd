@@ -12,7 +12,8 @@ At this stage, `slotd` is a single-binary Rust application that provides:
 - a local daemon
 - batch job submission
 - foreground command execution via `srun`
-- partition-aware scheduling for `cpu` and `gpu`
+- allocation-oriented foreground execution via `salloc`
+- partition-aware scheduling for multiple configured CPU and GPU partition names
 - queue inspection
 - accounting inspection
 - job cancellation
@@ -27,6 +28,7 @@ The current binary supports these subcommands:
 - `slotd sbatch [options] <script>`
 - `slotd sbatch --wrap <command>`
 - `slotd srun [options] -- <command...>`
+- `slotd salloc [options] [command...]`
 - `slotd squeue`
 - `slotd sacct`
 - `slotd scancel <job_id>`
@@ -36,13 +38,11 @@ The CLI also supports Slurm-like command aliases through `argv[0]` dispatch for:
 
 - `sbatch`
 - `srun`
+- `salloc`
 - `squeue`
 - `sacct`
 - `scancel`
 - `sinfo`
-
-This means a symlinked executable can behave like separate commands, although the
-repository still builds a single `slotd` binary.
 
 ## Runtime Layout
 
@@ -57,7 +57,12 @@ Paths:
 
 The root directory can be changed with the `SLOTD_ROOT` environment variable.
 
-GPU capacity can be configured with:
+Partition names can be configured with:
+
+- `SLOTD_CPU_PARTITIONS`
+- `SLOTD_GPU_PARTITIONS`
+
+GPU capacity and model can be configured with:
 
 - `SLOTD_GPU_COUNT`
 - `SLOTD_GPU_MODEL`
@@ -82,13 +87,13 @@ State behavior:
 
 - `sbatch` inserts a new job as `PENDING`
 - `srun` inserts a command job and waits for completion by default
+- `salloc` inserts an allocation-only job and waits until the allocation becomes runnable
 - the daemon scheduler starts a pending job when enough reserved resources are available
-- once spawned, the job becomes `RUNNING`
-- termination requested by timeout or cancellation passes through `COMPLETING`
+- once spawned or reserved, the job becomes `RUNNING`
+- cancellation and timeout requests pass through `COMPLETING`
 - an exit code of `0` becomes `COMPLETED`
 - a non-zero exit code or signal-based exit becomes `FAILED`
 - `scancel` changes a pending job directly to `CANCELLED`
-- `scancel` sends signals to a running job and records `CANCELLED`
 - jobs that exceed their configured time limit become `TIMEOUT`
 
 Reason and termination tracking:
@@ -106,8 +111,9 @@ Implemented behavior:
 - the daemon checks for runnable jobs in ID order
 - only one pending job is selected per scheduler loop iteration
 - resource admission is based on reserved CPU, memory, and GPU values
+- CPU reservation is `ntasks * cpus-per-task`
 - resources are derived from currently running jobs recorded in SQLite
-- supported partitions are `cpu` and `gpu`
+- both script-backed jobs and allocation-only jobs participate in the same scheduler
 
 Scheduler timing:
 
@@ -125,27 +131,29 @@ CPU and memory are currently used as scheduling reservations only.
 
 Implemented behavior:
 
-- `sbatch --cpus-per-task` sets requested CPUs
+- `sbatch --cpus-per-task` sets requested CPUs per task
+- `sbatch --ntasks` sets requested task count
 - `sbatch --mem` sets requested memory in MB
-- `sbatch --time` sets requested time limit in seconds internally
+- `sbatch --time` sets requested time limit
 - `sbatch --partition` selects a configured partition
 - `sbatch --gpus` sets requested GPU slots
-- `srun --cpus-per-task` sets requested CPUs
+- `srun --cpus-per-task` sets requested CPUs per task
+- `srun --ntasks` sets requested task count
 - `srun --mem` sets requested memory in MB
-- `srun --time` sets requested time limit in seconds internally
+- `srun --time` sets requested time limit
 - `srun --partition` selects a configured partition
 - `srun --gpus` sets requested GPU slots
+- `salloc` accepts the same resource flags as `srun` except output path flags
 - `sinfo` reports partition state and GRES-style usage
 - jobs are admitted only if requested resources fit within remaining reserved capacity
 
 Partition behavior:
 
-- if no GPUs are available, only `cpu` is exposed
-- if GPUs are available, both `cpu` and `gpu` are exposed
-- `cpu` jobs must request `0` GPUs
-- `gpu` jobs can request GPU slots
-- if `gpu` is selected without an explicit GPU count, the default is `1`
-- when a `gpu` job starts, specific GPU IDs are assigned from the free pool
+- CPU partitions come from `SLOTD_CPU_PARTITIONS`, default `cpu`
+- GPU partitions come from `SLOTD_GPU_PARTITIONS`, default `gpu` when GPUs exist
+- if no GPUs are available, no GPU partition is exposed
+- if a partition is configured as a GPU partition and `--gpus` is omitted, the default GPU count is `1`
+- when a GPU job starts, specific GPU IDs are assigned from the free pool
 - assigned GPU IDs are exported through `CUDA_VISIBLE_DEVICES`
 
 Not implemented yet:
@@ -165,6 +173,7 @@ Not implemented yet:
 - derives the default job name from the input script file name
 - prints `Submitted batch job <id>` by default
 - prints just `<id>` when `--parsable` is used
+- waits for completion and returns the job exit code when `--wait` is used
 
 Supported CLI options:
 
@@ -172,6 +181,7 @@ Supported CLI options:
 - `-J`, `--job-name`
 - `-p`, `--partition`
 - `-c`, `--cpus-per-task`
+- `-n`, `--ntasks`
 - `--mem`
 - `-t`, `--time`
 - `-G`, `--gpus`
@@ -179,12 +189,14 @@ Supported CLI options:
 - `-e`, `--error`
 - `-D`, `--chdir`
 - `--parsable`
+- `-W`, `--wait`
 
 Supported `#SBATCH` directives in script contents:
 
 - `-J`, `--job-name`
 - `-p`, `--partition`
 - `-c`, `--cpus-per-task`
+- `-n`, `--ntasks`
 - `--mem`
 - `-t`, `--time`
 - `-G`, `--gpus`
@@ -214,7 +226,6 @@ Not implemented yet:
 - arrays
 - accounts
 - priorities
-- `--wait`
 
 ## Command Submission
 
@@ -233,6 +244,7 @@ Supported options:
 - `-J`, `--job-name`
 - `-p`, `--partition`
 - `-c`, `--cpus-per-task`
+- `-n`, `--ntasks`
 - `--mem`
 - `-t`, `--time`
 - `-G`, `--gpus`
@@ -248,24 +260,54 @@ Current `--immediate` behavior:
 
 Not implemented yet:
 
-- interactive stdio streaming back to the caller
+- interactive real-time stdio streaming
 - `--pty`
 - task and step semantics comparable to full Slurm `srun`
 
+## Allocation Submission
+
+`salloc` currently works as follows:
+
+- accepts an optional command
+- if no command is provided, runs the current shell from `$SHELL` or `/bin/bash`
+- submits an allocation-only job
+- waits until the allocation is runnable
+- runs the command locally in the foreground with stdio inherited from the terminal
+- exports basic Slurm-style environment variables before launching the command
+- marks the allocation finished in the daemon when the foreground command exits
+
+Supported options:
+
+- `-J`, `--job-name`
+- `-p`, `--partition`
+- `-c`, `--cpus-per-task`
+- `-n`, `--ntasks`
+- `--mem`
+- `-t`, `--time`
+- `-G`, `--gpus`
+- `-D`, `--chdir`
+- `--immediate`
+
+Current limitations:
+
+- allocation cancellation depends on the CLI-adopted process group path
+- there is no separate concept of nested job steps inside the allocation
+
 ## Job Execution
 
-The daemon launches jobs directly with `/bin/bash`.
+The daemon launches script-backed jobs directly with `/bin/bash`.
 
 Implemented behavior:
 
 - the stored script path is executed with `/bin/bash`
 - the job runs in the recorded submission working directory
-- stdin is closed
+- stdin is closed for daemon-launched jobs
 - stdout and stderr are redirected to configured output files
 - if stdout and stderr resolve to the same path, one file is shared for both streams
 - the child process is started in a dedicated session via `setsid()`
 - the daemon tracks the child in memory while it is running
 - the daemon enforces configured time limits and terminates overdue jobs
+- basic Slurm-style environment variables are exported for daemon-launched jobs
 
 `scancel` behavior:
 
@@ -286,9 +328,11 @@ The `jobs` table currently stores:
 - partition
 - command string
 - working directory
-- requested CPUs
+- requested CPUs per task
+- requested task count
 - requested memory
 - requested GPUs
+- whether the job is allocation-only
 - configured time limit
 - assigned GPU IDs
 - submit, start, and end timestamps
@@ -312,6 +356,9 @@ Implemented request types:
 
 - submit batch job
 - submit command job
+- submit allocation-only job
+- adopt allocation process metadata
+- finish allocation-only job
 - list jobs for queue display
 - list jobs for accounting display
 - get a single job by ID
@@ -364,7 +411,7 @@ Supported `squeue --format` fields:
 
 Notes:
 
-- state uses short codes such as `PD`, `R`, `CD`, `F`, `CA`
+- state uses short codes such as `PD`, `R`, `CG`, `CD`, `F`, `CA`, `TO`, `OOM`
 - `NODELIST(REASON)` shows hostname for running and completed jobs, and a simple reason token for others
 
 ### `sacct`
@@ -466,7 +513,6 @@ The following planned features are not implemented yet:
 - `srun --pty`
 - exact runtime detection for `OUT_OF_MEMORY`
 - full Slurm `--format` syntax and field coverage
-- `sbatch --wait`
 - dependency handling
 - array jobs
 - structured config file
@@ -485,6 +531,3 @@ The repository is currently verified by unit tests for:
 - `#SBATCH` parsing rules
 - supported `--format` field parsing for `squeue`, `sacct`, and `sinfo`
 - output pattern expansion for `%j`, `%x`, `%u`, `%N`, and `%%`
-
-This means the project is already beyond a scaffold and into a working local prototype,
-but some end-to-end runtime behavior is still validated mainly by manual testing.

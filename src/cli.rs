@@ -1,6 +1,8 @@
 use std::ffi::OsString;
 use std::fs;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
@@ -30,6 +32,7 @@ enum Commands {
     Daemon,
     Sbatch(SbatchArgs),
     Srun(SrunArgs),
+    Salloc(SallocArgs),
     Squeue(SqueueArgs),
     Sacct(SacctArgs),
     Scancel(ScancelArgs),
@@ -48,6 +51,8 @@ pub struct SbatchArgs {
     partition: Option<String>,
     #[arg(long, short = 'c')]
     cpus_per_task: Option<u32>,
+    #[arg(long, short = 'n')]
+    ntasks: Option<u32>,
     #[arg(long)]
     mem: Option<String>,
     #[arg(long, short = 't')]
@@ -62,6 +67,8 @@ pub struct SbatchArgs {
     chdir: Option<PathBuf>,
     #[arg(long)]
     parsable: bool,
+    #[arg(long, short = 'W')]
+    wait: bool,
 }
 
 #[derive(Debug, Args)]
@@ -115,6 +122,8 @@ pub struct SrunArgs {
     partition: Option<String>,
     #[arg(long, short = 'c')]
     cpus_per_task: Option<u32>,
+    #[arg(long, short = 'n')]
+    ntasks: Option<u32>,
     #[arg(long)]
     mem: Option<String>,
     #[arg(long, short = 't')]
@@ -136,6 +145,30 @@ pub struct SrunArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct SallocArgs {
+    #[arg(long, short = 'J')]
+    job_name: Option<String>,
+    #[arg(long, short = 'p')]
+    partition: Option<String>,
+    #[arg(long, short = 'c')]
+    cpus_per_task: Option<u32>,
+    #[arg(long, short = 'n')]
+    ntasks: Option<u32>,
+    #[arg(long)]
+    mem: Option<String>,
+    #[arg(long, short = 't')]
+    time: Option<String>,
+    #[arg(long, short = 'G')]
+    gpus: Option<u32>,
+    #[arg(long, short = 'D')]
+    chdir: Option<PathBuf>,
+    #[arg(long)]
+    immediate: bool,
+    #[arg(num_args = 0.., trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 pub struct SinfoArgs {
     #[arg(short = 'p', long = "partition", value_delimiter = ',')]
     partitions: Option<Vec<String>>,
@@ -152,6 +185,7 @@ impl Cli {
             Commands::Daemon => daemon::run(config),
             Commands::Sbatch(args) => run_sbatch(config, args),
             Commands::Srun(args) => run_srun(config, args),
+            Commands::Salloc(args) => run_salloc(config, args),
             Commands::Squeue(args) => run_squeue(config, args),
             Commands::Sacct(args) => run_sacct(config, args),
             Commands::Scancel(args) => run_scancel(config, args),
@@ -174,6 +208,7 @@ pub fn dispatch_argv0(mut argv: Vec<OsString>) -> Vec<OsString> {
     let alias = match command.as_str() {
         "sbatch" => Some("sbatch"),
         "srun" => Some("srun"),
+        "salloc" => Some("salloc"),
         "squeue" => Some("squeue"),
         "sacct" => Some("sacct"),
         "scancel" => Some("scancel"),
@@ -225,6 +260,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         return Err(SlotdError::from(format!("unknown partition: {partition}")));
     }
     let requested_cpus = args.cpus_per_task.or(directives.cpus_per_task).unwrap_or(1);
+    let requested_tasks = args.ntasks.or(directives.ntasks).unwrap_or(1);
     let requested_memory_mb = match &args.mem {
         Some(value) => parse_mem_mb(value)?,
         None => directives.mem_mb.unwrap_or(512),
@@ -247,8 +283,10 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         script_body,
         command_override,
         requested_cpus,
+        requested_tasks,
         requested_memory_mb,
         requested_gpus,
+        allocation_only: false,
         time_limit_secs,
         stdout_path: args
             .output
@@ -267,7 +305,15 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
             } else {
                 println!("Submitted batch job {job_id}");
             }
-            Ok(())
+            if args.wait {
+                let job = wait_for_job_completion(&config, job_id)?;
+                match job.state {
+                    JobState::Completed => Ok(()),
+                    _ => Err(SlotdError::Exit(job.exit_code.unwrap_or(1))),
+                }
+            } else {
+                Ok(())
+            }
         }
         Response::Error { message } => Err(SlotdError::from(message)),
         other => Err(SlotdError::from(format!(
@@ -294,6 +340,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         return Err(SlotdError::from(format!("unknown partition: {partition}")));
     }
     let requested_cpus = args.cpus_per_task.unwrap_or(1);
+    let requested_tasks = args.ntasks.unwrap_or(1);
     let requested_memory_mb = match args.mem {
         Some(value) => parse_mem_mb(&value)?,
         None => 512,
@@ -318,8 +365,10 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         script_body,
         command_override: Some(command_override),
         requested_cpus,
+        requested_tasks,
         requested_memory_mb,
         requested_gpus,
+        allocation_only: false,
         time_limit_secs,
         stdout_path: args.output.clone().map(|path| path.to_string_lossy().to_string()),
         stderr_path: args.error.clone().map(|path| path.to_string_lossy().to_string()),
@@ -353,6 +402,81 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         JobState::Completed => Ok(()),
         _ => Err(SlotdError::Exit(job.exit_code.unwrap_or(1))),
     }
+}
+
+fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
+    let cwd = args
+        .chdir
+        .as_ref()
+        .map(|path| path.to_string_lossy().to_string())
+        .unwrap_or_else(current_dir_string);
+    let command = if args.command.is_empty() {
+        vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".to_string())]
+    } else {
+        args.command
+    };
+    let command_name = command
+        .first()
+        .map(|value| command_basename(value))
+        .unwrap_or_else(|| "salloc".to_string());
+    let partition = args
+        .partition
+        .unwrap_or_else(|| config.default_partition().to_string());
+    if !config.has_partition(&partition) {
+        return Err(SlotdError::from(format!("unknown partition: {partition}")));
+    }
+    let requested_cpus = args.cpus_per_task.unwrap_or(1);
+    let requested_tasks = args.ntasks.unwrap_or(1);
+    let requested_memory_mb = match args.mem {
+        Some(value) => parse_mem_mb(&value)?,
+        None => 512,
+    };
+    let requested_gpus = args
+        .gpus
+        .unwrap_or_else(|| config.default_gpus_for_partition(&partition));
+    let time_limit_secs = args
+        .time
+        .as_deref()
+        .map(parse_time_limit_secs)
+        .transpose()?;
+
+    let request = SubmitRequest {
+        name: args.job_name.or_else(|| Some("salloc".to_string())),
+        user_name: current_user_name(),
+        partition,
+        cwd: cwd.clone(),
+        script_name: command_name.clone(),
+        script_body: String::new(),
+        command_override: Some(shell_join(&command)),
+        requested_cpus,
+        requested_tasks,
+        requested_memory_mb,
+        requested_gpus,
+        allocation_only: true,
+        time_limit_secs,
+        stdout_path: None,
+        stderr_path: None,
+    };
+
+    let job_id = match send_request(
+        &config,
+        &Request::SubmitAlloc {
+            request,
+            immediate: args.immediate,
+        },
+    )? {
+        Response::Submitted { job_id } => job_id,
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response to salloc: {other:?}"
+            )))
+        }
+    };
+
+    println!("Granted job allocation {job_id}");
+    let job = wait_for_job_running(&config, job_id)?;
+    run_foreground_allocation(&config, &job, &command)
 }
 
 fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
@@ -468,6 +592,95 @@ fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord>
     }
 }
 
+fn wait_for_job_running(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
+    loop {
+        match send_request(config, &Request::GetJob { job_id })? {
+            Response::Job { job: Some(job) } if job.state == JobState::Running => return Ok(job),
+            Response::Job { job: Some(job) } if job.state.is_terminal() => {
+                return Err(SlotdError::from(format!(
+                    "allocation {job_id} ended before it became runnable: {}",
+                    job.state.as_str()
+                )))
+            }
+            Response::Job { job: Some(_) } => thread::sleep(Duration::from_millis(200)),
+            Response::Job { job: None } => {
+                return Err(SlotdError::from(format!("allocation {job_id} disappeared")))
+            }
+            Response::Error { message } => return Err(SlotdError::from(message)),
+            other => {
+                return Err(SlotdError::from(format!(
+                    "unexpected response while waiting for allocation {job_id}: {other:?}"
+                )))
+            }
+        }
+    }
+}
+
+fn run_foreground_allocation(config: &AppConfig, job: &JobRecord, command: &[String]) -> Result<()> {
+    let mut child = Command::new(&command[0]);
+    child.args(&command[1..]);
+    child.current_dir(&job.cwd);
+    child.stdin(Stdio::inherit());
+    child.stdout(Stdio::inherit());
+    child.stderr(Stdio::inherit());
+    apply_slurm_env(&mut child, config, job);
+    unsafe {
+        child.pre_exec(|| {
+            nix::unistd::setsid().map_err(std::io::Error::other)?;
+            Ok(())
+        });
+    }
+    let mut child = child.spawn()?;
+    let pid = child.id() as i32;
+    let pgid = pid;
+    match send_request(
+        config,
+        &Request::AdoptAllocation {
+            job_id: job.id,
+            pid,
+            pgid,
+        },
+    )? {
+        Response::Submitted { .. } => {}
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response while adopting allocation {}: {other:?}",
+                job.id
+            )))
+        }
+    }
+
+    let status = child.wait()?;
+    let exit_code = status.code();
+    let term_signal = exit_signal(&status);
+    let (state, reason) = allocation_terminal_state(exit_code, term_signal);
+    match send_request(
+        config,
+        &Request::FinishAllocation {
+            job_id: job.id,
+            state,
+            exit_code,
+            term_signal,
+            state_reason: Some(reason.to_string()),
+        },
+    )? {
+        Response::Submitted { .. } => {}
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response while finishing allocation {}: {other:?}",
+                job.id
+            )))
+        }
+    }
+
+    match state {
+        JobState::Completed => Ok(()),
+        _ => Err(SlotdError::Exit(exit_code.unwrap_or(1))),
+    }
+}
+
 fn replay_srun_output(job: &JobRecord, replay_stdout: bool, replay_stderr: bool) -> Result<()> {
     if replay_stdout {
         let stdout = fs::read_to_string(&job.stdout_path).unwrap_or_default();
@@ -482,6 +695,16 @@ fn replay_srun_output(job: &JobRecord, replay_stdout: bool, replay_stderr: bool)
         }
     }
     Ok(())
+}
+
+fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
+    command.env("SLURM_JOB_ID", job.id.to_string());
+    command.env("SLURM_JOB_NAME", &job.name);
+    command.env("SLURM_JOB_PARTITION", &job.partition);
+    command.env("SLURM_JOB_NODELIST", &config.hostname);
+    command.env("SLURM_SUBMIT_DIR", &job.cwd);
+    command.env("SLURM_NTASKS", job.requested_tasks.to_string());
+    command.env("SLURM_CPUS_PER_TASK", job.requested_cpus.to_string());
 }
 
 fn shell_join(args: &[String]) -> String {
@@ -516,6 +739,31 @@ fn command_basename(command: &str) -> String {
 
 fn current_user_name() -> String {
     std::env::var("USER").unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::ExitStatusExt;
+        status.signal()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = status;
+        None
+    }
+}
+
+fn allocation_terminal_state(
+    exit_code: Option<i32>,
+    term_signal: Option<i32>,
+) -> (JobState, &'static str) {
+    match (exit_code, term_signal) {
+        (Some(0), None) => (JobState::Completed, "Completed"),
+        (Some(_), None) => (JobState::Failed, "NonZeroExitCode"),
+        (_, Some(_)) => (JobState::Failed, "Signal"),
+        _ => (JobState::Failed, "UnknownFailure"),
+    }
 }
 
 fn current_dir_string() -> String {

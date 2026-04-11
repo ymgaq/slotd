@@ -25,6 +25,10 @@ impl Store {
         Ok(store)
     }
 
+    pub fn config(&self) -> &AppConfig {
+        &self.config
+    }
+
     pub fn create_job(&self, request: SubmitRequest) -> Result<i64> {
         let submit_time = now_ts();
         let user_name = request.user_name.clone();
@@ -35,8 +39,8 @@ impl Store {
         self.conn.execute(
             "INSERT INTO jobs (
                 name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                requested_gpus, submit_time, state_reason, time_limit_secs
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                requested_tasks, requested_gpus, allocation_only, submit_time, state_reason, time_limit_secs
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
             params![
                 resolved_name,
                 request.user_name,
@@ -49,7 +53,9 @@ impl Store {
                 request.cwd,
                 request.requested_cpus,
                 request.requested_memory_mb,
+                request.requested_tasks,
                 request.requested_gpus,
+                request.allocation_only,
                 submit_time,
                 "Resources",
                 request.time_limit_secs.map(|value| value as i64),
@@ -113,7 +119,7 @@ impl Store {
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_gpus,
+                    requested_tasks, requested_gpus, allocation_only,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs"
@@ -143,7 +149,7 @@ impl Store {
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_gpus,
+                    requested_tasks, requested_gpus, allocation_only,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs"
@@ -165,7 +171,7 @@ impl Store {
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_gpus,
+                    requested_tasks, requested_gpus, allocation_only,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
@@ -181,7 +187,7 @@ impl Store {
         self.conn
             .query_row(
                 "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                        requested_gpus,
+                        requested_tasks, requested_gpus, allocation_only,
                         submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                         assigned_gpus, script_path, stdout_path, stderr_path
                  FROM jobs
@@ -196,7 +202,7 @@ impl Store {
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_gpus, submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
+                    requested_tasks, requested_gpus, allocation_only, submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs,
                     assigned_gpus, script_path, stdout_path, stderr_path
              FROM jobs
              WHERE state = 'PENDING'
@@ -220,6 +226,26 @@ impl Store {
              SET state = 'RUNNING', state_reason = '', pid = ?1, pgid = ?2, start_time = ?3, assigned_gpus = ?4
              WHERE id = ?5",
             params![pid, pgid, now_ts(), join_gpu_ids(assigned_gpu_ids), job_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn mark_allocation_running(&self, job_id: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs
+             SET state = 'RUNNING', state_reason = '', start_time = ?1
+             WHERE id = ?2",
+            params![now_ts(), job_id],
+        )?;
+        Ok(())
+    }
+
+    pub fn adopt_allocation(&self, job_id: i64, pid: i32, pgid: i32) -> Result<()> {
+        self.conn.execute(
+            "UPDATE jobs
+             SET pid = ?1, pgid = ?2
+             WHERE id = ?3",
+            params![pid, pgid, job_id],
         )?;
         Ok(())
     }
@@ -271,14 +297,14 @@ impl Store {
     pub fn node_info(&self) -> Result<NodeInfo> {
         let mut partitions = Vec::new();
         for partition in self.config.active_partitions() {
-            partitions.push(self.partition_info(partition)?);
+            partitions.push(self.partition_info(&partition)?);
         }
         Ok(NodeInfo { partitions })
     }
 
     pub fn running_resource_usage(&self) -> Result<(u32, u64, u32)> {
         let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(SUM(requested_cpus), 0), COALESCE(SUM(requested_memory_mb), 0),
+            "SELECT COALESCE(SUM(requested_cpus * requested_tasks), 0), COALESCE(SUM(requested_memory_mb), 0),
                     COALESCE(SUM(requested_gpus), 0)
              FROM jobs
              WHERE state = 'RUNNING'",
@@ -344,8 +370,20 @@ impl Store {
         ensure_column(
             &self.conn,
             "jobs",
+            "requested_tasks",
+            "ALTER TABLE jobs ADD COLUMN requested_tasks INTEGER NOT NULL DEFAULT 1",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
             "requested_gpus",
             "ALTER TABLE jobs ADD COLUMN requested_gpus INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "allocation_only",
+            "ALTER TABLE jobs ADD COLUMN allocation_only INTEGER NOT NULL DEFAULT 0",
         )?;
         ensure_column(
             &self.conn,
@@ -414,7 +452,7 @@ impl Store {
 
     fn running_usage_for_partition(&self, partition: &str) -> Result<(u32, u64, u32)> {
         let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(SUM(requested_cpus), 0), COALESCE(SUM(requested_memory_mb), 0),
+            "SELECT COALESCE(SUM(requested_cpus * requested_tasks), 0), COALESCE(SUM(requested_memory_mb), 0),
                     COALESCE(SUM(requested_gpus), 0)
              FROM jobs
              WHERE state = 'RUNNING' AND partition = ?1",
@@ -480,29 +518,31 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         cwd: row.get(6)?,
         requested_cpus: row.get(7)?,
         requested_memory_mb: row.get(8)?,
-        requested_gpus: row.get(9)?,
-        submit_time: row.get(10)?,
-        start_time: row.get(11)?,
-        end_time: row.get(12)?,
-        pid: row.get(13)?,
-        pgid: row.get(14)?,
-        exit_code: row.get(15)?,
+        requested_tasks: row.get(9)?,
+        requested_gpus: row.get(10)?,
+        allocation_only: row.get::<_, bool>(11)?,
+        submit_time: row.get(12)?,
+        start_time: row.get(13)?,
+        end_time: row.get(14)?,
+        pid: row.get(15)?,
+        pgid: row.get(16)?,
+        exit_code: row.get(17)?,
         state_reason: row
-            .get::<_, String>(16)
+            .get::<_, String>(18)
             .ok()
             .filter(|value| !value.is_empty()),
-        term_signal: row.get(17)?,
-        time_limit_secs: row.get::<_, Option<i64>>(18)?.map(|value| value as u64),
-        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(19)?).map_err(|error| {
+        term_signal: row.get(19)?,
+        time_limit_secs: row.get::<_, Option<i64>>(20)?.map(|value| value as u64),
+        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(21)?).map_err(|error| {
             rusqlite::Error::FromSqlConversionFailure(
-                19,
+                21,
                 rusqlite::types::Type::Text,
                 Box::new(error),
             )
         })?,
-        script_path: row.get(20)?,
-        stdout_path: row.get(21)?,
-        stderr_path: row.get(22)?,
+        script_path: row.get(22)?,
+        stdout_path: row.get(23)?,
+        stderr_path: row.get(24)?,
     })
 }
 

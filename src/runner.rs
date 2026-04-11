@@ -54,6 +54,13 @@ impl Runner {
         command.stdin(Stdio::null());
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
+        command.env("SLURM_JOB_ID", job.id.to_string());
+        command.env("SLURM_JOB_NAME", &job.name);
+        command.env("SLURM_JOB_PARTITION", &job.partition);
+        command.env("SLURM_JOB_NODELIST", store.config().hostname.clone());
+        command.env("SLURM_SUBMIT_DIR", &job.cwd);
+        command.env("SLURM_NTASKS", job.requested_tasks.to_string());
+        command.env("SLURM_CPUS_PER_TASK", job.requested_cpus.to_string());
         if !assigned_gpu_ids.is_empty() {
             command.env("CUDA_VISIBLE_DEVICES", join_gpu_ids(&assigned_gpu_ids));
         }

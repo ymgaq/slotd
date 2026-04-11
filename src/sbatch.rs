@@ -7,6 +7,7 @@ pub struct BatchDirectives {
     pub job_name: Option<String>,
     pub partition: Option<String>,
     pub cpus_per_task: Option<u32>,
+    pub ntasks: Option<u32>,
     pub mem_mb: Option<u64>,
     pub gpus: Option<u32>,
     pub time_limit_secs: Option<u64>,
@@ -183,6 +184,15 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if token == "--cpus-per-task" || token == "-c" {
             directives.cpus_per_task = Some(parse_u32(token, require_value(token, next)?)?);
             2
+        } else if let Some(value) = token.strip_prefix("--ntasks=") {
+            directives.ntasks = Some(parse_u32("--ntasks", value)?);
+            1
+        } else if let Some(value) = token.strip_prefix("-n=") {
+            directives.ntasks = Some(parse_u32("-n", value)?);
+            1
+        } else if token == "--ntasks" || token == "-n" {
+            directives.ntasks = Some(parse_u32(token, require_value(token, next)?)?);
+            2
         } else if let Some(value) = token.strip_prefix("--mem=") {
             directives.mem_mb = Some(parse_mem_mb(value)?);
             1
@@ -277,6 +287,7 @@ mod tests {
 #SBATCH -J demo
 #SBATCH -p gpu
 #SBATCH -c 4
+#SBATCH -n 3
 #SBATCH -G 2
 #SBATCH -o logs/out.txt
 #SBATCH -e logs/err.txt
@@ -287,6 +298,7 @@ echo hi
         assert_eq!(directives.job_name.as_deref(), Some("demo"));
         assert_eq!(directives.partition.as_deref(), Some("gpu"));
         assert_eq!(directives.cpus_per_task, Some(4));
+        assert_eq!(directives.ntasks, Some(3));
         assert_eq!(directives.gpus, Some(2));
         assert_eq!(directives.output_path.as_deref(), Some("logs/out.txt"));
         assert_eq!(directives.error_path.as_deref(), Some("logs/err.txt"));

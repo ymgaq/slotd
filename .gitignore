@@ -1,9 +1,6 @@
 .codex
 .vscode
 
-
-# Added by cargo
-
 /target
 /logs/
 /var/*
