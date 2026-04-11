@@ -345,8 +345,8 @@ impl Store {
             ",
         )?;
         let rows = stmt.query_map([], map_job)?;
-        rows.collect::<std::result::Result<Vec<_>, _>>()
-            .map_err(Into::into)
+        let jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(order_pending_jobs(jobs))
     }
 
     pub fn mark_running(
@@ -874,6 +874,58 @@ fn next_step_id_query(conn: &Connection, parent_job_id: i64) -> Result<u32> {
         |row| row.get::<_, i64>(0),
     )?;
     Ok((current + 1).max(0) as u32)
+}
+
+fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
+    let now = now_ts();
+    jobs.sort_by(|a, b| {
+        let a_score = effective_priority(a, now);
+        let b_score = effective_priority(b, now);
+        b_score
+            .cmp(&a_score)
+            .then_with(|| a.submit_time.cmp(&b.submit_time))
+            .then_with(|| a.id.cmp(&b.id))
+    });
+
+    let mut grouped = std::collections::BTreeMap::<i64, Vec<JobRecord>>::new();
+    for job in jobs {
+        let group_key = job.array_job_id.unwrap_or(job.id);
+        grouped.entry(group_key).or_default().push(job);
+    }
+
+    let group_order = grouped
+        .iter()
+        .map(|(group_key, group_jobs)| {
+            let top = &group_jobs[0];
+            (*group_key, effective_priority(top, now), top.submit_time, top.id)
+        })
+        .collect::<Vec<_>>();
+
+    let mut group_order = group_order;
+    group_order.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.2.cmp(&b.2)).then_with(|| a.3.cmp(&b.3)));
+
+    let mut ordered = Vec::new();
+    loop {
+        let mut progressed = false;
+        for (group_key, _, _, _) in &group_order {
+            if let Some(group_jobs) = grouped.get_mut(group_key) {
+                if !group_jobs.is_empty() {
+                    ordered.push(group_jobs.remove(0));
+                    progressed = true;
+                }
+            }
+        }
+        if !progressed {
+            break;
+        }
+    }
+
+    ordered
+}
+
+fn effective_priority(job: &JobRecord, now: i64) -> i64 {
+    let age_bonus = now.saturating_sub(job.submit_time) / 60;
+    job.priority as i64 + age_bonus
 }
 
 fn script_command(script_name: &str) -> String {
