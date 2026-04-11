@@ -1243,6 +1243,11 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) 
     };
     let req_tres = format_job_req_tres(job);
     let alloc_tres = format_job_alloc_tres(config, job);
+    let req_gres = if job.requested_gpus > 0 {
+        format!("gpu:{}", job.requested_gpus)
+    } else {
+        "(null)".to_string()
+    };
     println!(
         "JobId={} JobName={} UserId={}({}) Partition={} State={} Reason={}",
         job.id,
@@ -1254,11 +1259,11 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) 
         reason
     );
     println!(
-        "   NumTasks={} CPUs/Task={} ReqMem={}MB ReqGRES=gpu:{} TimeLimit={} Dependency={}",
+        "   NumTasks={} CPUs/Task={} ReqMem={}MB ReqGRES={} TimeLimit={} Dependency={}",
         job.requested_tasks,
         job.requested_cpus,
         job.requested_memory_mb,
-        job.requested_gpus,
+        req_gres,
         time_limit,
         dependency
     );

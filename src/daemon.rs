@@ -64,6 +64,25 @@ fn handle_stream(
     }
 
     let request: Request = serde_json::from_str(&request_line)?;
+    let response = match dispatch_request(config, store, runner, request) {
+        Ok(response) => response,
+        Err(error) => Response::Error {
+            message: error.to_string(),
+        },
+    };
+
+    serde_json::to_writer(&mut stream, &response)?;
+    stream.write_all(b"\n")?;
+    stream.flush()?;
+    Ok(())
+}
+
+fn dispatch_request(
+    config: &AppConfig,
+    store: &Store,
+    runner: &mut Runner,
+    request: Request,
+) -> Result<Response> {
     let response = match request {
         Request::SubmitBatch(request) => {
             let job_id = store.create_job(request)?;
@@ -180,11 +199,7 @@ fn handle_stream(
             info: store.node_info()?,
         },
     };
-
-    serde_json::to_writer(&mut stream, &response)?;
-    stream.write_all(b"\n")?;
-    stream.flush()?;
-    Ok(())
+    Ok(response)
 }
 
 fn schedule_pending_jobs(store: &Store, runner: &mut Runner) -> Result<()> {
