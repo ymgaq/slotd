@@ -1,0 +1,10 @@
+[book]
+authors = ["slotd contributors"]
+language = "ja"
+src = "src"
+title = "slotd"
+
+[output.html]
+default-theme = "light"
+git-repository-url = "https://github.com/example/slotd"
+site-url = "/slotd/ja/"

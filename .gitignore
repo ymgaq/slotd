@@ -5,3 +5,7 @@
 /logs/
 /var/*
 !/var/.gitkeep
+
+/docs-site/book/
+/docs-site-ja/book/
+/docs-site-cn/book/
