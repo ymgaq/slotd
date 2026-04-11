@@ -29,7 +29,7 @@ The repository already implements:
 - `sinfo`
 - a local daemon using a Unix domain socket
 - SQLite-backed job persistence
-- FIFO scheduling
+- submission-order scheduling with optional explicit priority overrides
 - reservation-based CPU, memory, and GPU admission
 - process-group-based cancellation
 - minimal restart recovery for running jobs
@@ -38,9 +38,12 @@ The implemented runtime state machine is currently:
 
 - `PENDING`
 - `RUNNING`
+- `COMPLETING`
 - `COMPLETED`
 - `FAILED`
 - `CANCELLED`
+- `TIMEOUT`
+- `OUT_OF_MEMORY`
 
 The implemented system is usable, but it is still an MVP and diverges from Slurm
 in several important ways, especially around `srun`, partition modeling, default
@@ -130,7 +133,7 @@ there is a concrete reason.
 Examples:
 
 - SQLite is acceptable even though Slurm uses different internals
-- a simple FIFO scheduler is acceptable initially
+- a simple submission-order scheduler with an optional local priority override is acceptable initially
 - process groups are an acceptable local substitute for a more complex launcher
 - custom command names or custom flag names are not desirable
 
@@ -293,7 +296,7 @@ encoding all non-successful terminal outcomes as generic `FAILED`.
 
 ### Initial Scheduler Policy
 
-Continue to use FIFO as the first scheduling policy.
+Continue to use submission-order scheduling as the base policy.
 
 This is acceptable because:
 
@@ -301,6 +304,13 @@ This is acceptable because:
 - it is predictable
 - it matches current implementation
 - it does not block CLI compatibility work
+
+The current supported nuance is:
+
+- pending jobs are primarily ordered by submission time
+- explicit per-job priority may override pure submission order
+- this priority control is intentionally narrow and local-only
+- no fairshare, QoS, or multi-user scheduling policy should be added around it
 
 The scheduler should still be written so that alternative policies can be added
 later without rewriting persistence or command handling.
@@ -609,6 +619,10 @@ Within `scontrol`, the supported subset is intentionally narrow:
 - `release job`
 - `update job`
 
+This is a deliberate product decision. These subcommands stay because they are
+useful on one machine without dragging in broader cluster-administration
+surface area.
+
 ### Supported Core Options
 
 The common resource and execution model should center on:
@@ -628,8 +642,16 @@ The command-specific high-value options are:
   - `--wrap`
   - `-o`, `--output`
   - `-e`, `--error`
+  - `--constraint`
   - `-d`, `--dependency`
   - `-a`, `--array`
+  - `--export`
+  - `--export-file`
+  - `--open-mode`
+  - `--signal`
+  - `--begin`
+  - `--exclusive`
+  - `--requeue`
   - `--parsable`
   - `-W`, `--wait`
 - `srun`
@@ -637,8 +659,12 @@ The command-specific high-value options are:
   - `-e`, `--error`
   - `--immediate`
   - `--pty`
+  - `--cpu-bind`
+  - `--label`
+  - `--unbuffered`
 - `salloc`
   - `--immediate`
+  - `--constraint`
 - `squeue`
   - `--all`
   - `-j`, `--jobs`
@@ -648,6 +674,8 @@ The command-specific high-value options are:
   - `-o`, `--format`
   - `-S`, `--sort`
   - `-l`, `--long`
+  - `--start`
+  - `--array`
   - `--noheader`
 - `sacct`
   - `-j`, `--jobs`
@@ -668,22 +696,20 @@ The command-specific high-value options are:
   - `-l`, `--long`
   - `-o`, `--format`
   - `--noheader`
+- `scontrol`
+  - `hold job`
+  - `release job`
+  - `update job JobName=...`
+  - `update job Partition=...`
+  - `update job TimeLimit=...`
+  - `update job Priority=...`
 
 ### Supported Near-Term Extensions
 
 The next useful additions within this subset are:
 
-- `sbatch --export`
-- `sbatch --export-file`
-- `sbatch --open-mode`
-- `sbatch --signal`
-- `sbatch --begin`
-- `sbatch --exclusive`
-- `srun --cpu-bind`
-- `srun --label`
-- `srun --unbuffered`
-- `squeue --start`
-- shared `--constraint` support across `sbatch`, `srun`, and `salloc`
+- a minimal `sstat`-like running-statistics view if local demand is real
+- a narrow `sattach`-like debugging aid only if concrete local workflows need it
 
 These remain compatible with the single-user, single-host model and directly
 improve local experimentation, reproducibility, and observability.
@@ -766,142 +792,35 @@ The rule is simple: if an option is mainly meaningful because Slurm is managing
 many nodes, many users, or many administrative domains, it should not be in the
 target subset.
 
-## Roadmap
+## Implementation Status
 
-The roadmap should follow the chosen single-user subset, not upstream Slurm's
-full command surface.
+The phased rollout described earlier has been completed through the currently
+supported subset.
 
-### Phase 0: Freeze The Product Boundary
+Implemented additions from that rollout include:
 
-1. document the supported command set
-2. document the supported option families
-3. document explicit non-goals and excluded Slurm features
-4. define one shared resource model across `sbatch`, `srun`, and `salloc`
-5. stop adding ad hoc options outside that model
+- shared resource handling across `sbatch`, `srun`, and `salloc`
+- documented `sbatch` precedence of CLI, environment, `#SBATCH`, then defaults
+- `scancel --signal`
+- `sbatch --export`, `--export-file`, `--open-mode`, and `--signal`
+- `squeue --start`
+- shared `--constraint` support
+- `srun --cpu-bind`
+- improved `sinfo -l`
+- `sbatch --begin`
+- `sbatch --exclusive`
+- `srun --label`
+- `srun --unbuffered`
+- `squeue --array`
+- `sbatch --requeue`
+- lightweight notification support through `SLOTD_NOTIFY_CMD`
 
-Completion criteria:
+The remaining intentionally unimplemented optional items are:
 
-- the project has a stable definition of its intended Slurm subset
-- future compatibility work can be judged against an explicit scope boundary
+- a minimal `sstat`-like running-statistics view
+- a narrow `sattach`-like capability for local debugging
 
-### Phase 1: Stabilize The Existing Core Commands
-
-1. make `sbatch`, `srun`, and `salloc` interpret common resource flags consistently
-2. keep `srun` foreground and exit-code-preserving by default
-3. keep `salloc` allocation-first and shell-friendly
-4. stabilize `squeue`, `sacct`, `scontrol show job`, and `sinfo` default output
-5. ensure `#SBATCH` parsing and precedence rules are documented and predictable
-
-Completion criteria:
-
-- the existing command set is coherent enough for day-to-day local use
-- users do not have to remember command-specific quirks for the same resource flags
-
-### Phase 1.5: Reconcile Existing Behavior With The Intended Subset
-
-This phase exists to correct already-implemented behavior that is either too far
-from Slurm semantics or unnecessarily broad for the personal-machine subset.
-
-1. fix `sbatch` precedence so it matches the intended order
-   - CLI options
-   - environment
-   - `#SBATCH`
-   - built-in defaults
-2. narrow `srun` behavior so it feels like one command with predictable foreground semantics rather than multiple hidden execution modes
-3. add `scancel --signal` and treat it as part of the core subset rather than an optional enhancement
-4. decide whether `scontrol hold/release/update` remains part of the supported subset or is reduced to a smaller stable surface
-5. decide whether explicit job priority remains part of the product
-6. keep array jobs and step tracking only to the extent they improve local usability, not to chase full Slurm internal parity
-7. remove or simplify behaviors whose primary purpose is shared-cluster scheduling rather than single-user local execution
-
-Design guidance for this phase:
-
-- fix incompatible behavior before adding more compatible-looking surface area
-- prefer deleting or narrowing weakly justified behavior over preserving it for its own sake
-- if a feature is kept, it should either improve local usability directly or strengthen the supported Slurm subset
-- if a feature is kept under the same name as Slurm, its behavior should not be surprisingly different
-
-Completion criteria:
-
-- the most user-visible semantic mismatches in existing commands are corrected
-- features that do not justify their maintenance cost in the single-user model are either removed, narrowed, or explicitly demoted
-- the project no longer carries ambiguous features that are neither clearly supported nor clearly out of scope
-
-### Phase 2: Add Reproducibility And Job-Control Essentials
-
-1. add `scancel --signal`
-2. add `sbatch --export`
-3. add `sbatch --export-file`
-4. add `sbatch --open-mode=append|truncate`
-5. add `sbatch --signal`
-6. add `squeue --start`
-
-Completion criteria:
-
-- users can control shutdown behavior cleanly
-- users can make job environments more reproducible
-- users can reason about waiting jobs more easily
-
-### Phase 3: Add High-Value Single-Node Placement Controls
-
-1. add shared `--constraint` support to `sbatch`, `srun`, and `salloc`
-2. add `srun --cpu-bind`
-3. improve `sinfo -l`
-4. stabilize `scontrol update job` for `JobName`, `Partition`, `TimeLimit`, and `Priority`
-5. keep these controls faithful to the single-host model rather than emulating multi-node behavior
-
-Completion criteria:
-
-- users can target local hardware characteristics intentionally
-- CPU-heavy local runs can be made more stable and predictable
-- post-submission adjustments remain limited and understandable
-
-### Phase 4: Add Convenience Features That Help Daily Workflows
-
-1. add `sbatch --begin`
-2. add `sbatch --exclusive`
-3. add `srun --label`
-4. add `srun --unbuffered`
-5. improve array display and accounting polish where it helps local workflows
-
-Completion criteria:
-
-- common personal-machine workflows become smoother without widening scope
-- convenience features do not require a redesign of the scheduler model
-
-### Phase 5: Add Optional Extensions Only If Real Demand Appears
-
-1. consider `--requeue`
-2. consider lightweight notification support
-3. consider a minimal `sstat`-like running-statistics view
-4. consider a narrow `sattach`-like capability only if needed for local debugging
-5. reject additions that mostly serve shared-cluster administration
-
-Completion criteria:
-
-- every feature in this phase has a demonstrated local-user need
-- the product remains a focused personal-machine scheduler rather than drifting toward full Slurm
-
-## Next Implementation Order
-
-The recommended order for future work is:
-
-1. Phase 0
-2. Phase 1
-3. Phase 1.5
-4. Phase 2
-5. Phase 3
-6. Phase 4
-7. Phase 5
-
-This order is intentional.
-
-The supported subset should be frozen first so that implementation work does not
-expand the surface area accidentally. After that, the existing commands should
-be made coherent before adding new options. Existing incompatible or weakly
-justified behavior should be reconciled before expanding the surface further.
-Reproducibility, shutdown control, and local observability come before
-convenience features.
+These should only be added if there is a concrete local single-user need.
 
 ## Final Recommendation
 
@@ -911,7 +830,7 @@ The most practical design for `slotd` is:
 - one local daemon supervised by `systemd`
 - Unix domain socket IPC
 - SQLite as durable state
-- FIFO scheduling initially
+- submission-order scheduling initially, with only a small local priority override
 - single-node resource accounting
 - process-group-based execution and cancellation
 - strong emphasis on Slurm-compatible command interface and observable behavior
