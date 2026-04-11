@@ -19,8 +19,13 @@ use crate::error::Result;
 
 fn main() {
     if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
+        match error {
+            crate::error::SlotdError::Exit(code) => std::process::exit(code),
+            other => {
+                eprintln!("error: {other}");
+                std::process::exit(1);
+            }
+        }
     }
 }
 

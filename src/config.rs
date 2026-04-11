@@ -57,7 +57,7 @@ impl AppConfig {
     }
 
     pub fn has_partition(&self, partition: &str) -> bool {
-        partition == self.default_partition()
+        self.active_partitions().contains(&partition)
     }
 
     pub fn default_partition(&self) -> &'static str {
@@ -65,7 +65,11 @@ impl AppConfig {
     }
 
     pub fn active_partitions(&self) -> Vec<&'static str> {
-        vec![self.default_partition()]
+        if self.has_gpu_partition() {
+            vec!["cpu", "gpu"]
+        } else {
+            vec!["cpu"]
+        }
     }
 
     pub fn default_gpus_for_partition(&self, partition: &str) -> u32 {

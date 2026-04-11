@@ -70,11 +70,38 @@ fn handle_stream(
             Response::Submitted { job_id }
         }
         Request::SubmitRun { request, immediate } => submit_run(store, runner, request, immediate)?,
-        Request::ListJobs { states } => Response::Jobs {
-            jobs: store.list_jobs(states.as_deref())?,
+        Request::ListJobs {
+            states,
+            ids,
+            user_name,
+            partitions,
+        } => Response::Jobs {
+            jobs: store.list_jobs(
+                states.as_deref(),
+                ids.as_deref(),
+                user_name.as_deref(),
+                partitions.as_deref(),
+            )?,
         },
-        Request::ListAccountingJobs { states, ids } => Response::Jobs {
-            jobs: store.list_accounting_jobs(states.as_deref(), ids.as_deref())?,
+        Request::ListAccountingJobs {
+            states,
+            ids,
+            user_name,
+            partitions,
+            start_time,
+            end_time,
+        } => Response::Jobs {
+            jobs: store.list_accounting_jobs(
+                states.as_deref(),
+                ids.as_deref(),
+                user_name.as_deref(),
+                partitions.as_deref(),
+                start_time,
+                end_time,
+            )?,
+        },
+        Request::GetJob { job_id } => Response::Job {
+            job: store.get_job(job_id)?,
         },
         Request::Cancel { job_id } => {
             if runner.cancel(config, store, job_id)? {

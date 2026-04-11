@@ -30,6 +30,10 @@ impl JobState {
             Self::Cancelled => "CA",
         }
     }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+    }
 }
 
 impl std::str::FromStr for JobState {

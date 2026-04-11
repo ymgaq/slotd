@@ -88,24 +88,12 @@ impl Store {
         Ok(job_id)
     }
 
-    pub fn list_jobs(&self, states: Option<&[JobState]>) -> Result<Vec<JobRecord>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_gpus,
-                    submit_time, start_time, end_time, pid, pgid, exit_code,
-                    assigned_gpus, script_path, stdout_path, stderr_path
-             FROM jobs"
-        )?;
-        let rows = stmt.query_map([], map_job)?;
-        let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
-        jobs.sort_by(|a, b| b.id.cmp(&a.id));
-        Ok(filter_jobs(jobs, states, None))
-    }
-
-    pub fn list_accounting_jobs(
+    pub fn list_jobs(
         &self,
         states: Option<&[JobState]>,
         ids: Option<&[i64]>,
+        user_name: Option<&str>,
+        partitions: Option<&[String]>,
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
@@ -117,7 +105,45 @@ impl Store {
         let rows = stmt.query_map([], map_job)?;
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| b.id.cmp(&a.id));
-        Ok(filter_jobs(jobs, states, ids))
+        Ok(filter_jobs(
+            jobs,
+            states,
+            ids,
+            user_name,
+            partitions,
+            None,
+            None,
+        ))
+    }
+
+    pub fn list_accounting_jobs(
+        &self,
+        states: Option<&[JobState]>,
+        ids: Option<&[i64]>,
+        user_name: Option<&str>,
+        partitions: Option<&[String]>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    ) -> Result<Vec<JobRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+                    requested_gpus,
+                    submit_time, start_time, end_time, pid, pgid, exit_code,
+                    assigned_gpus, script_path, stdout_path, stderr_path
+             FROM jobs"
+        )?;
+        let rows = stmt.query_map([], map_job)?;
+        let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        jobs.sort_by(|a, b| b.id.cmp(&a.id));
+        Ok(filter_jobs(
+            jobs,
+            states,
+            ids,
+            user_name,
+            partitions,
+            start_time,
+            end_time,
+        ))
     }
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
@@ -488,6 +514,39 @@ fn parse_gpu_ids(value: &str) -> Result<Vec<u32>> {
         .collect()
 }
 
+fn filter_jobs(
+    jobs: Vec<JobRecord>,
+    states: Option<&[JobState]>,
+    ids: Option<&[i64]>,
+    user_name: Option<&str>,
+    partitions: Option<&[String]>,
+    start_time: Option<i64>,
+    end_time: Option<i64>,
+) -> Vec<JobRecord> {
+    jobs.into_iter()
+        .filter(|job| {
+            let state_ok = states
+                .map(|states| states.contains(&job.state))
+                .unwrap_or(true);
+            let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
+            let user_ok = user_name.map(|name| job.user_name == name).unwrap_or(true);
+            let partition_ok = partitions
+                .map(|partitions| partitions.iter().any(|partition| partition == &job.partition))
+                .unwrap_or(true);
+            let start_ok = start_time
+                .map(|start| job.submit_time >= start || job.start_time.unwrap_or(job.submit_time) >= start)
+                .unwrap_or(true);
+            let end_ok = end_time
+                .map(|end| {
+                    let effective_end = job.end_time.or(job.start_time).unwrap_or(job.submit_time);
+                    effective_end <= end
+                })
+                .unwrap_or(true);
+            state_ok && id_ok && user_ok && partition_ok && start_ok && end_ok
+        })
+        .collect()
+}
+
 fn partition_state(
     partition: &str,
     allocated_cpus: u32,
@@ -532,20 +591,4 @@ fn partition_gres_used(
     };
 
     format!("gpu:{gpu_model}:{total_gpus}({idx})")
-}
-
-fn filter_jobs(
-    jobs: Vec<JobRecord>,
-    states: Option<&[JobState]>,
-    ids: Option<&[i64]>,
-) -> Vec<JobRecord> {
-    jobs.into_iter()
-        .filter(|job| {
-            let state_ok = states
-                .map(|states| states.contains(&job.state))
-                .unwrap_or(true);
-            let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
-            state_ok && id_ok
-        })
-        .collect()
 }

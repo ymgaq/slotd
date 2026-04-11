@@ -16,10 +16,20 @@ pub enum Request {
     },
     ListJobs {
         states: Option<Vec<JobState>>,
+        ids: Option<Vec<i64>>,
+        user_name: Option<String>,
+        partitions: Option<Vec<String>>,
     },
     ListAccountingJobs {
         states: Option<Vec<JobState>>,
         ids: Option<Vec<i64>>,
+        user_name: Option<String>,
+        partitions: Option<Vec<String>>,
+        start_time: Option<i64>,
+        end_time: Option<i64>,
+    },
+    GetJob {
+        job_id: i64,
     },
     Cancel {
         job_id: i64,
@@ -31,6 +41,7 @@ pub enum Request {
 pub enum Response {
     Submitted { job_id: i64 },
     Jobs { jobs: Vec<JobRecord> },
+    Job { job: Option<JobRecord> },
     Cancelled { job_id: i64 },
     NodeInfo { info: NodeInfo },
     Error { message: String },

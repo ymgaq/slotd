@@ -11,6 +11,7 @@ pub struct BatchDirectives {
     pub gpus: Option<u32>,
     pub output_path: Option<String>,
     pub error_path: Option<String>,
+    pub chdir: Option<String>,
 }
 
 pub fn parse_directives(script_body: &str) -> Result<BatchDirectives> {
@@ -18,8 +19,14 @@ pub fn parse_directives(script_body: &str) -> Result<BatchDirectives> {
 
     for raw_line in script_body.lines() {
         let trimmed = raw_line.trim();
-        if !trimmed.starts_with("#SBATCH") {
+        if trimmed.starts_with("#!") {
             continue;
+        }
+        if !trimmed.starts_with("#SBATCH") {
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            break;
         }
 
         let args = trimmed.trim_start_matches("#SBATCH").trim();
@@ -82,6 +89,9 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         let consumed = if let Some(value) = token.strip_prefix("--job-name=") {
             directives.job_name = Some(value.to_string());
             1
+        } else if let Some(value) = token.strip_prefix("-J=") {
+            directives.job_name = Some(value.to_string());
+            1
         } else if let Some(value) = token.strip_prefix("--partition=") {
             directives.partition = Some(value.to_string());
             1
@@ -91,13 +101,16 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if token == "--partition" || token == "-p" {
             directives.partition = Some(require_value(token, next)?.to_string());
             2
-        } else if token == "--job-name" {
+        } else if token == "--job-name" || token == "-J" {
             directives.job_name = Some(require_value(token, next)?.to_string());
             2
         } else if let Some(value) = token.strip_prefix("--cpus-per-task=") {
             directives.cpus_per_task = Some(parse_u32("--cpus-per-task", value)?);
             1
-        } else if token == "--cpus-per-task" {
+        } else if let Some(value) = token.strip_prefix("-c=") {
+            directives.cpus_per_task = Some(parse_u32("-c", value)?);
+            1
+        } else if token == "--cpus-per-task" || token == "-c" {
             directives.cpus_per_task = Some(parse_u32(token, require_value(token, next)?)?);
             2
         } else if let Some(value) = token.strip_prefix("--mem=") {
@@ -109,20 +122,38 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if let Some(value) = token.strip_prefix("--gpus=") {
             directives.gpus = Some(parse_u32("--gpus", value)?);
             1
-        } else if token == "--gpus" {
+        } else if let Some(value) = token.strip_prefix("-G=") {
+            directives.gpus = Some(parse_u32("-G", value)?);
+            1
+        } else if token == "--gpus" || token == "-G" {
             directives.gpus = Some(parse_u32(token, require_value(token, next)?)?);
             2
         } else if let Some(value) = token.strip_prefix("--output=") {
             directives.output_path = Some(value.to_string());
             1
-        } else if token == "--output" {
+        } else if let Some(value) = token.strip_prefix("-o=") {
+            directives.output_path = Some(value.to_string());
+            1
+        } else if token == "--output" || token == "-o" {
             directives.output_path = Some(require_value(token, next)?.to_string());
             2
         } else if let Some(value) = token.strip_prefix("--error=") {
             directives.error_path = Some(value.to_string());
             1
-        } else if token == "--error" {
+        } else if let Some(value) = token.strip_prefix("-e=") {
+            directives.error_path = Some(value.to_string());
+            1
+        } else if token == "--error" || token == "-e" {
             directives.error_path = Some(require_value(token, next)?.to_string());
+            2
+        } else if let Some(value) = token.strip_prefix("--chdir=") {
+            directives.chdir = Some(value.to_string());
+            1
+        } else if let Some(value) = token.strip_prefix("-D=") {
+            directives.chdir = Some(value.to_string());
+            1
+        } else if token == "--chdir" || token == "-D" {
+            directives.chdir = Some(require_value(token, next)?.to_string());
             2
         } else {
             1
@@ -146,4 +177,44 @@ fn parse_u32(flag: &str, value: &str) -> Result<u32> {
 
 fn split_tokens(input: &str) -> Vec<String> {
     input.split_whitespace().map(ToString::to_string).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_directives;
+
+    #[test]
+    fn parses_long_and_short_sbatch_directives() {
+        let script = "\
+#!/bin/bash
+#SBATCH -J demo
+#SBATCH -p gpu
+#SBATCH -c 4
+#SBATCH -G 2
+#SBATCH -o logs/out.txt
+#SBATCH -e logs/err.txt
+#SBATCH -D /tmp/work
+echo hi
+";
+        let directives = parse_directives(script).expect("parse directives");
+        assert_eq!(directives.job_name.as_deref(), Some("demo"));
+        assert_eq!(directives.partition.as_deref(), Some("gpu"));
+        assert_eq!(directives.cpus_per_task, Some(4));
+        assert_eq!(directives.gpus, Some(2));
+        assert_eq!(directives.output_path.as_deref(), Some("logs/out.txt"));
+        assert_eq!(directives.error_path.as_deref(), Some("logs/err.txt"));
+        assert_eq!(directives.chdir.as_deref(), Some("/tmp/work"));
+    }
+
+    #[test]
+    fn ignores_directives_after_first_executable_line() {
+        let script = "\
+#!/bin/bash
+#SBATCH -J before
+echo start
+#SBATCH -J after
+";
+        let directives = parse_directives(script).expect("parse directives");
+        assert_eq!(directives.job_name.as_deref(), Some("before"));
+    }
 }

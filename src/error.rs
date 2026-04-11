@@ -4,6 +4,8 @@ use thiserror::Error;
 
 #[derive(Debug, Error)]
 pub enum SlotdError {
+    #[error("process exited with code {0}")]
+    Exit(i32),
     #[error("{0}")]
     Message(String),
     #[error("io error: {0}")]
