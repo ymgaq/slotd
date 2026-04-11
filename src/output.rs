@@ -34,11 +34,11 @@ pub fn print_sacct_jobs(jobs: &[JobRecord]) {
     }
 }
 
-pub fn print_sinfo(info: &NodeInfo) {
+pub fn print_sinfo(config: &AppConfig, info: &NodeInfo) {
     println!(" PARTITION |           HOSTNAMES | STATE |                        GRES_USED");
     for partition in &info.partitions {
-        let partition_name = if partition.name == "gpu" {
-            "gpu*".to_string()
+        let partition_name = if partition.name == config.default_partition() {
+            format!("{}*", partition.name)
         } else {
             partition.name.clone()
         };

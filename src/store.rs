@@ -208,11 +208,11 @@ impl Store {
     }
 
     pub fn node_info(&self) -> Result<NodeInfo> {
-        let cpu = self.partition_info("cpu")?;
-        let gpu = self.partition_info("gpu")?;
-        Ok(NodeInfo {
-            partitions: vec![cpu, gpu],
-        })
+        let mut partitions = Vec::new();
+        for partition in self.config.active_partitions() {
+            partitions.push(self.partition_info(partition)?);
+        }
+        Ok(NodeInfo { partitions })
     }
 
     pub fn running_resource_usage(&self) -> Result<(u32, u64, u32)> {

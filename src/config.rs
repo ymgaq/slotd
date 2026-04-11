@@ -42,7 +42,7 @@ impl AppConfig {
             cancel_grace_secs: 2,
             total_cpus: available_parallelism(),
             total_memory_mb: 16 * 1024,
-            total_gpus: env_u32("SLOTD_GPU_COUNT", detected_gpus.count.unwrap_or(1)),
+            total_gpus: env_u32("SLOTD_GPU_COUNT", detected_gpus.count.unwrap_or(0)),
             gpu_model: env::var("SLOTD_GPU_MODEL")
                 .ok()
                 .or(detected_gpus.model)
@@ -57,15 +57,27 @@ impl AppConfig {
     }
 
     pub fn has_partition(&self, partition: &str) -> bool {
-        matches!(partition, "cpu" | "gpu")
+        partition == self.default_partition()
     }
 
     pub fn default_partition(&self) -> &'static str {
-        "gpu"
+        if self.has_gpu_partition() { "gpu" } else { "cpu" }
+    }
+
+    pub fn active_partitions(&self) -> Vec<&'static str> {
+        vec![self.default_partition()]
     }
 
     pub fn default_gpus_for_partition(&self, partition: &str) -> u32 {
-        if partition == "gpu" { 1 } else { 0 }
+        if partition == "gpu" && self.has_gpu_partition() {
+            1
+        } else {
+            0
+        }
+    }
+
+    pub fn has_gpu_partition(&self) -> bool {
+        self.total_gpus > 0
     }
 }
 

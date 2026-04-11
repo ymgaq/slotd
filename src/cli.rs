@@ -316,7 +316,7 @@ fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
 fn run_sinfo(config: AppConfig) -> Result<()> {
     match send_request(&config, &Request::NodeInfo)? {
         Response::NodeInfo { info } => {
-            print_sinfo(&info);
+            print_sinfo(&config, &info);
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),

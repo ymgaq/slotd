@@ -115,11 +115,11 @@ Implemented behavior:
 
 - `sbatch --cpus-per-task` sets requested CPUs
 - `sbatch --mem` sets requested memory in MB
-- `sbatch --partition` selects `cpu` or `gpu`
+- `sbatch --partition` selects the active partition for the current machine
 - `sbatch --gpus` sets requested GPU slots
 - `srun --cpus-per-task` sets requested CPUs
 - `srun --mem` sets requested memory in MB
-- `srun --partition` selects `cpu` or `gpu`
+- `srun --partition` selects the active partition for the current machine
 - `srun --gpus` sets requested GPU slots
 - `sinfo` reports total and allocated reserved resources
 - `sinfo` marks the default partition with `*`
@@ -128,9 +128,10 @@ Implemented behavior:
 
 Partition behavior:
 
+- if GPUs are detected or configured, the machine exposes a single `gpu` partition
+- if no GPUs are available, the machine exposes a single `cpu` partition
 - `cpu` jobs must request `0` GPUs
 - `gpu` jobs can request GPU slots
-- `gpu` is the default partition
 - if `gpu` is selected without an explicit GPU count, the default is `1`
 - when a `gpu` job starts, specific GPU IDs are assigned from the free pool
 - assigned GPU IDs are exported through `CUDA_VISIBLE_DEVICES`
