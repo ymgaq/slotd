@@ -7,6 +7,7 @@ mod job;
 mod output;
 mod recovery;
 mod runner;
+mod sbatch;
 mod store;
 
 use std::ffi::OsString;

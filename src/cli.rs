@@ -10,6 +10,7 @@ use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
 use crate::job::SubmitRequest;
 use crate::output::{print_jobs, print_node_info};
+use crate::sbatch::{parse_directives, parse_mem_mb};
 
 #[derive(Debug, Parser)]
 #[command(name = "slotd")]
@@ -33,10 +34,14 @@ pub struct SbatchArgs {
     script: PathBuf,
     #[arg(long)]
     job_name: Option<String>,
-    #[arg(long, default_value_t = 1)]
-    cpus_per_task: u32,
-    #[arg(long, default_value_t = 512)]
-    mem: u64,
+    #[arg(long)]
+    cpus_per_task: Option<u32>,
+    #[arg(long)]
+    mem: Option<String>,
+    #[arg(long)]
+    output: Option<PathBuf>,
+    #[arg(long)]
+    error: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -84,6 +89,7 @@ pub fn dispatch_argv0(mut argv: Vec<OsString>) -> Vec<OsString> {
 
 fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
     let script_body = fs::read_to_string(&args.script)?;
+    let directives = parse_directives(&script_body)?;
     let cwd = std::env::current_dir()?.to_string_lossy().to_string();
     let script_name = args
         .script
@@ -91,14 +97,27 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         .and_then(|name| name.to_str())
         .unwrap_or("script.sh")
         .to_string();
+    let requested_cpus = args.cpus_per_task.or(directives.cpus_per_task).unwrap_or(1);
+    let requested_memory_mb = match args.mem {
+        Some(value) => parse_mem_mb(&value)?,
+        None => directives.mem_mb.unwrap_or(512),
+    };
 
     let request = SubmitRequest {
-        name: args.job_name,
+        name: args.job_name.or(directives.job_name),
         cwd,
         script_name,
         script_body,
-        requested_cpus: args.cpus_per_task,
-        requested_memory_mb: args.mem,
+        requested_cpus,
+        requested_memory_mb,
+        stdout_path: args
+            .output
+            .map(|path| path.to_string_lossy().to_string())
+            .or(directives.output_path),
+        stderr_path: args
+            .error
+            .map(|path| path.to_string_lossy().to_string())
+            .or(directives.error_path),
     };
 
     match send_request(&config, &Request::SubmitBatch(request))? {

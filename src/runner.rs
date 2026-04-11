@@ -5,7 +5,8 @@ use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use nix::sys::signal::{Signal, killpg};
+use nix::errno::Errno;
+use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, setsid};
 
 use crate::config::AppConfig;
@@ -15,7 +16,12 @@ use crate::store::Store;
 
 pub struct RunningJob {
     pub pgid: i32,
-    child: Child,
+    handle: JobHandle,
+}
+
+enum JobHandle {
+    Child(Child),
+    Adopted,
 }
 
 pub struct Runner {
@@ -52,27 +58,73 @@ impl Runner {
         let pgid = pid;
         store.mark_running(job.id, pid, pgid)?;
 
-        self.jobs.insert(job.id, RunningJob { pgid, child });
+        self.jobs.insert(
+            job.id,
+            RunningJob {
+                pgid,
+                handle: JobHandle::Child(child),
+            },
+        );
+        Ok(())
+    }
+
+    pub fn adopt(&mut self, job: &JobRecord) {
+        let pgid = job.pgid.or(job.pid).unwrap_or_default();
+        if pgid <= 0 {
+            return;
+        }
+
+        self.jobs.insert(
+            job.id,
+            RunningJob {
+                pgid,
+                handle: JobHandle::Adopted,
+            },
+        );
+    }
+
+    pub fn reconcile_adopted(&mut self, store: &Store) -> Result<()> {
+        let mut finished = Vec::new();
+        for (&job_id, running) in &self.jobs {
+            if let JobHandle::Adopted = running.handle {
+                if !process_group_alive(running.pgid)? {
+                    store.mark_finished(job_id, JobState::Failed, None)?;
+                    finished.push(job_id);
+                }
+            }
+        }
+
+        for job_id in finished {
+            self.jobs.remove(&job_id);
+        }
+
         Ok(())
     }
 
     pub fn poll(&mut self, store: &Store) -> Result<()> {
         let mut finished = Vec::new();
         for (&job_id, running) in &mut self.jobs {
-            if let Some(status) = running.child.try_wait()? {
-                let exit_code = exit_signal(&status).or(status.code());
-                let state = match exit_code {
-                    Some(0) => JobState::Completed,
-                    Some(_) => JobState::Failed,
-                    None => JobState::Failed,
-                };
-                store.mark_finished(job_id, state, exit_code)?;
-                finished.push(job_id);
+            match &mut running.handle {
+                JobHandle::Child(child) => {
+                    if let Some(status) = child.try_wait()? {
+                        let exit_code = exit_signal(&status).or(status.code());
+                        let state = match exit_code {
+                            Some(0) => JobState::Completed,
+                            Some(_) => JobState::Failed,
+                            None => JobState::Failed,
+                        };
+                        store.mark_finished(job_id, state, exit_code)?;
+                        finished.push(job_id);
+                    }
+                }
+                JobHandle::Adopted => {}
             }
         }
+
         for job_id in finished {
             self.jobs.remove(&job_id);
         }
+
         Ok(())
     }
 
@@ -81,7 +133,7 @@ impl Runner {
             return Ok(true);
         }
 
-        let Some(mut running) = self.jobs.remove(&job_id) else {
+        let Some(running) = self.jobs.remove(&job_id) else {
             return Ok(false);
         };
 
@@ -89,18 +141,30 @@ impl Runner {
         let _ = killpg(pgid, Signal::SIGTERM);
         thread::sleep(Duration::from_secs(config.cancel_grace_secs));
 
-        let exit_code = if let Some(status) = running.child.try_wait()? {
-            exit_signal(&status).or(status.code())
-        } else {
-            let _ = killpg(pgid, Signal::SIGKILL);
-            let status = running.child.wait()?;
-            exit_signal(&status).or(status.code())
+        let exit_code = match running.handle {
+            JobHandle::Child(mut child) => {
+                if let Some(status) = child.try_wait()? {
+                    exit_signal(&status).or(status.code())
+                } else {
+                    let _ = killpg(pgid, Signal::SIGKILL);
+                    let status = child.wait()?;
+                    exit_signal(&status).or(status.code())
+                }
+            }
+            JobHandle::Adopted => {
+                if process_group_alive(running.pgid)? {
+                    let _ = killpg(pgid, Signal::SIGKILL);
+                    wait_for_group_exit(running.pgid, config.cancel_grace_secs)?;
+                }
+                None
+            }
         };
 
         store.mark_finished(job_id, JobState::Cancelled, exit_code)?;
         Ok(true)
     }
 }
+
 fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
     #[cfg(unix)]
     {
@@ -112,4 +176,32 @@ fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
         let _ = status;
         None
     }
+}
+
+fn process_group_alive(pgid: i32) -> Result<bool> {
+    if pgid <= 0 {
+        return Ok(false);
+    }
+
+    match kill(Pid::from_raw(-pgid), None) {
+        Ok(()) => Ok(true),
+        Err(Errno::EPERM) => Ok(true),
+        Err(Errno::ESRCH) => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn wait_for_group_exit(pgid: i32, timeout_secs: u64) -> Result<()> {
+    let retries = std::cmp::max(1, timeout_secs * 10);
+    for _ in 0..retries {
+        if !process_group_alive(pgid)? {
+            return Ok(());
+        }
+        thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
+}
+
+pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {
+    process_group_alive(pgid)
 }

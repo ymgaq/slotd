@@ -75,6 +75,8 @@ pub struct SubmitRequest {
     pub script_body: String,
     pub requested_cpus: u32,
     pub requested_memory_mb: u64,
+    pub stdout_path: Option<String>,
+    pub stderr_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

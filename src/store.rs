@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::config::AppConfig;
 use crate::error::{Result, SlotdError};
 use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
+use crate::sbatch::resolve_log_path;
 
 const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 
@@ -24,15 +25,16 @@ impl Store {
 
     pub fn create_job(&self, request: SubmitRequest) -> Result<i64> {
         let submit_time = now_ts();
+        let resolved_name = request
+            .name
+            .clone()
+            .unwrap_or_else(|| default_name(&request.script_name));
         self.conn.execute(
             "INSERT INTO jobs (
                 name, state, command, cwd, requested_cpus, requested_memory_mb, submit_time
             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
-                request
-                    .name
-                    .clone()
-                    .unwrap_or_else(|| default_name(&request.script_name)),
+                resolved_name,
                 JobState::Pending.as_str(),
                 script_command(&request.script_name),
                 request.cwd,
@@ -49,8 +51,18 @@ impl Store {
         let script_path = job_dir.join("script.sh");
         fs::write(&script_path, request.script_body)?;
 
-        let stdout_path = job_dir.join("stdout.log");
-        let stderr_path = job_dir.join("stderr.log");
+        let stdout_path = request
+            .stdout_path
+            .as_deref()
+            .map(|path| PathBuf::from(resolve_log_path(&request.cwd, path)))
+            .unwrap_or_else(|| job_dir.join("stdout.log"));
+        let stderr_path = request
+            .stderr_path
+            .as_deref()
+            .map(|path| PathBuf::from(resolve_log_path(&request.cwd, path)))
+            .unwrap_or_else(|| job_dir.join("stderr.log"));
+        ensure_parent_dir(&stdout_path)?;
+        ensure_parent_dir(&stderr_path)?;
 
         self.conn.execute(
             "UPDATE jobs
@@ -74,6 +86,20 @@ impl Store {
                     script_path, stdout_path, stderr_path
              FROM jobs
              ORDER BY id DESC",
+        )?;
+        let rows = stmt.query_map([], map_job)?;
+        rows.collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, name, state, command, cwd, requested_cpus, requested_memory_mb,
+                    submit_time, start_time, end_time, pid, pgid, exit_code,
+                    script_path, stdout_path, stderr_path
+             FROM jobs
+             WHERE state = 'RUNNING'
+             ORDER BY id ASC",
         )?;
         let rows = stmt.query_map([], map_job)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -134,16 +160,6 @@ impl Store {
             params![now_ts(), job_id],
         )?;
         Ok(changed > 0)
-    }
-
-    pub fn fail_stale_running_jobs(&self) -> Result<usize> {
-        let changed = self.conn.execute(
-            "UPDATE jobs
-             SET state = 'FAILED', end_time = ?1
-             WHERE state = 'RUNNING'",
-            params![now_ts()],
-        )?;
-        Ok(changed)
     }
 
     pub fn node_info(&self) -> Result<NodeInfo> {
@@ -243,4 +259,11 @@ fn script_command(script_name: &str) -> String {
 
 fn path_string(path: &PathBuf) -> String {
     path.to_string_lossy().to_string()
+}
+
+fn ensure_parent_dir(path: &Path) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    Ok(())
 }

@@ -21,12 +21,13 @@ pub fn run(config: AppConfig) -> Result<()> {
     listener.set_nonblocking(true)?;
 
     let store = Store::open(config.clone())?;
-    recovery::recover(&store)?;
     let mut runner = Runner::new();
+    recovery::recover(&store, &mut runner)?;
 
     loop {
         handle_requests(&listener, &config, &store, &mut runner)?;
         runner.poll(&store)?;
+        runner.reconcile_adopted(&store)?;
         schedule_pending_jobs(&store, &mut runner)?;
         thread::sleep(Duration::from_millis(config.scheduler_interval_ms));
     }

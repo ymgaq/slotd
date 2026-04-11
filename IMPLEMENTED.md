@@ -117,17 +117,29 @@ Not implemented yet:
 - stores the requested resource values
 - derives the default job name from the input script file name
 
-Supported options:
+Supported CLI options:
 
 - `--job-name`
 - `--cpus-per-task`
 - `--mem`
+- `--output`
+- `--error`
+
+Supported `#SBATCH` directives in script contents:
+
+- `--job-name`
+- `--cpus-per-task`
+- `--mem`
+- `--output`
+- `--error`
+
+Precedence:
+
+- explicit CLI options override `#SBATCH` directives
+- `#SBATCH` directives override built-in defaults
 
 Not implemented yet:
 
-- parsing `#SBATCH` directives from script contents
-- `--output`
-- `--error`
 - partitions, accounts, priorities, dependencies, arrays
 
 ## Job Execution
@@ -139,7 +151,8 @@ Implemented behavior:
 - the stored script path is executed with `/bin/bash`
 - the job runs in the recorded submission working directory
 - stdin is closed
-- stdout and stderr are redirected to per-job log files
+- stdout and stderr are redirected to per-job log files by default
+- `--output` and `--error` can override the default log destinations
 - the child process is started in a dedicated session via `setsid()`
 - the daemon tracks the child in memory while it is running
 
@@ -229,13 +242,19 @@ Recovery is implemented in a minimal form.
 
 Current behavior on daemon startup:
 
-- any job left in `RUNNING` state is marked `FAILED`
+- `RUNNING` jobs with a live PID or PGID are adopted back into daemon tracking
+- `RUNNING` jobs whose process is no longer alive are marked `FAILED`
+- adopted jobs can still be cancelled after restart
 
 Not implemented yet:
 
-- PID liveness checks
-- reattaching to still-running processes
-- preserving execution across daemon restart
+- exact exit-code recovery for jobs that survive a daemon restart
+- preserving full child wait semantics across daemon restart
+
+Current limitation:
+
+- an adopted job that finishes after daemon restart is currently finalized as `FAILED`
+  because the new daemon process cannot recover the original child exit status
 
 ## Packaging Files
 
@@ -251,11 +270,9 @@ paths by default rather than `/run/slotd` and `/var/lib/slotd`.
 The following planned features are not implemented yet:
 
 - `srun`
-- `#SBATCH` directive parsing
 - structured config file
 - `--json` output
 - richer queue formatting
-- daemon reattachment to live jobs after restart
 - cgroup v2 resource enforcement
 - multi-job fairness or priority scheduling
 - systemd-managed installation flow
