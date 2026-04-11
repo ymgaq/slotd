@@ -18,8 +18,7 @@ use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest, WarningSignal};
 use crate::output::{
     parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
-    print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs,
-    print_squeue_jobs_with_options,
+    print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs, print_squeue_jobs_with_options,
     print_squeue_jobs_with_start_times,
 };
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
@@ -107,6 +106,7 @@ struct SbatchEnvOverrides {
     signal: Option<String>,
     begin: Option<String>,
     exclusive: bool,
+    requeue: bool,
 }
 
 impl ResourceArgs {
@@ -199,6 +199,8 @@ pub struct SbatchArgs {
     begin: Option<String>,
     #[arg(long)]
     exclusive: bool,
+    #[arg(long)]
+    requeue: bool,
     #[arg(long, short = 'd')]
     dependency: Option<String>,
     #[arg(long, short = 'a')]
@@ -394,7 +396,9 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
     let resolved = args.resources.resolve(&config, Some(&defaults))?;
     let export_env = resolve_export_env(
         args.export.as_deref().or(env_overrides.export.as_deref()),
-        args.export_file.as_deref().or(env_overrides.export_file.as_deref()),
+        args.export_file
+            .as_deref()
+            .or(env_overrides.export_file.as_deref()),
     )?;
     let open_mode = args
         .open_mode
@@ -417,6 +421,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         .map(parse_begin_time)
         .transpose()?;
     let exclusive = args.exclusive || env_overrides.exclusive || defaults.exclusive;
+    let requeue = args.requeue || env_overrides.requeue || defaults.requeue;
 
     let request = SubmitRequest {
         name: resolved.job_name,
@@ -449,6 +454,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         export_env,
         open_mode,
         warning_signal,
+        requeue,
     };
 
     match send_request(&config, &Request::SubmitBatch(request))? {
@@ -560,6 +566,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         export_env: Vec::new(),
         open_mode: OpenMode::Truncate,
         warning_signal: None,
+        requeue: false,
     };
 
     let job_id = match send_request(
@@ -623,6 +630,7 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
         export_env: Vec::new(),
         open_mode: OpenMode::Truncate,
         warning_signal: None,
+        requeue: false,
     };
 
     let job_id = match send_request(
@@ -933,9 +941,7 @@ fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord>
 fn load_job(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
     match send_request(config, &Request::GetJob { job_id })? {
         Response::Job { job: Some(job) } => Ok(job),
-        Response::Job { job: None } => {
-            Err(SlotdError::from(format!("job {job_id} not found")))
-        }
+        Response::Job { job: None } => Err(SlotdError::from(format!("job {job_id} not found"))),
         Response::Error { message } => Err(SlotdError::from(message)),
         other => Err(SlotdError::from(format!(
             "unexpected response while loading job {job_id}: {other:?}"
@@ -1053,9 +1059,13 @@ fn run_foreground_allocation_with_mode(
     )?;
     apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
     let cpu_ids = resolve_cpu_bind_ids(
-        cpu_bind.or(step_record.as_ref().and_then(|step| step.cpu_bind.as_deref())),
+        cpu_bind.or(step_record
+            .as_ref()
+            .and_then(|step| step.cpu_bind.as_deref())),
         config.total_cpus,
-        job.requested_cpus.saturating_mul(job.requested_tasks).max(1),
+        job.requested_cpus
+            .saturating_mul(job.requested_tasks)
+            .max(1),
     )?;
     unsafe {
         child.pre_exec(|| {
@@ -1234,6 +1244,7 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         export_env: Vec::new(),
         open_mode: OpenMode::Truncate,
         warning_signal: None,
+        requeue: false,
     };
 
     let job_id = match send_request(
@@ -1420,11 +1431,24 @@ fn configure_foreground_stdio(
     command.stdout(Stdio::from(stdout_writer));
     command.stderr(Stdio::from(stderr_writer));
 
-    let stdout_handle =
-        spawn_output_forwarder(stdout_reader, stdout_target, label_output, unbuffered, "0: ")?;
-    let stderr_handle =
-        spawn_output_forwarder(stderr_reader, stderr_target, label_output, unbuffered, "0: ")?;
-    Ok(ForegroundIoState::Streamed(vec![stdout_handle, stderr_handle]))
+    let stdout_handle = spawn_output_forwarder(
+        stdout_reader,
+        stdout_target,
+        label_output,
+        unbuffered,
+        "0: ",
+    )?;
+    let stderr_handle = spawn_output_forwarder(
+        stderr_reader,
+        stderr_target,
+        label_output,
+        unbuffered,
+        "0: ",
+    )?;
+    Ok(ForegroundIoState::Streamed(vec![
+        stdout_handle,
+        stderr_handle,
+    ]))
 }
 
 fn spawn_output_forwarder(
@@ -1488,7 +1512,11 @@ fn resolve_cpu_bind_ids(
     }
     if let Some(list) = normalized.strip_prefix("map_cpu:") {
         let mut cpus = Vec::new();
-        for part in list.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        for part in list
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
             let cpu = part
                 .parse::<usize>()
                 .map_err(|_| SlotdError::from(format!("invalid cpu-bind cpu id: {part}")))?;
@@ -1500,7 +1528,9 @@ fn resolve_cpu_bind_ids(
             cpus.push(cpu);
         }
         if cpus.is_empty() {
-            return Err(SlotdError::from("cpu-bind map_cpu requires at least one CPU id"));
+            return Err(SlotdError::from(
+                "cpu-bind map_cpu requires at least one CPU id",
+            ));
         }
         cpus.sort_unstable();
         cpus.dedup();
@@ -1571,7 +1601,9 @@ fn run_foreground_step(
     let cpu_ids = resolve_cpu_bind_ids(
         cpu_bind.or(step.cpu_bind.as_deref()),
         config.total_cpus,
-        job.requested_cpus.saturating_mul(job.requested_tasks).max(1),
+        job.requested_cpus
+            .saturating_mul(job.requested_tasks)
+            .max(1),
     )?;
     unsafe {
         child.pre_exec(|| {
@@ -1860,7 +1892,10 @@ where
     directives.constraint = get("SBATCH_CONSTRAINT");
     directives.begin = get("SBATCH_BEGIN");
     directives.exclusive = get("SBATCH_EXCLUSIVE")
-        .map(|value| matches!(value.to_ascii_lowercase().as_str(), "1" | "true" | "yes"))
+        .map(|value| parse_env_flag(&value))
+        .unwrap_or(false);
+    directives.requeue = get("SBATCH_REQUEUE")
+        .map(|value| parse_env_flag(&value))
         .unwrap_or(false);
     directives.output_path = get("SBATCH_OUTPUT");
     directives.error_path = get("SBATCH_ERROR");
@@ -1868,6 +1903,7 @@ where
     directives.dependency = get("SBATCH_DEPENDENCY");
     directives.array_spec = get("SBATCH_ARRAY_INX");
     let exclusive = directives.exclusive;
+    let requeue = directives.requeue;
 
     SbatchEnvOverrides {
         directives,
@@ -1877,6 +1913,7 @@ where
         signal: get("SBATCH_SIGNAL"),
         begin: get("SBATCH_BEGIN"),
         exclusive,
+        requeue,
     }
 }
 
@@ -1885,7 +1922,10 @@ fn merge_batch_directives(
     overrides: &BatchDirectives,
 ) -> BatchDirectives {
     BatchDirectives {
-        job_name: overrides.job_name.clone().or_else(|| directives.job_name.clone()),
+        job_name: overrides
+            .job_name
+            .clone()
+            .or_else(|| directives.job_name.clone()),
         partition: overrides
             .partition
             .clone()
@@ -1900,6 +1940,7 @@ fn merge_batch_directives(
             .or_else(|| directives.constraint.clone()),
         begin: overrides.begin.clone().or_else(|| directives.begin.clone()),
         exclusive: overrides.exclusive || directives.exclusive,
+        requeue: overrides.requeue || directives.requeue,
         time_limit_secs: overrides.time_limit_secs.or(directives.time_limit_secs),
         dependency: overrides
             .dependency
@@ -1921,7 +1962,10 @@ fn merge_batch_directives(
     }
 }
 
-fn resolve_export_env(export: Option<&str>, export_file: Option<&Path>) -> Result<Vec<(String, String)>> {
+fn resolve_export_env(
+    export: Option<&str>,
+    export_file: Option<&Path>,
+) -> Result<Vec<(String, String)>> {
     let mut env = Vec::<(String, String)>::new();
     if let Some(path) = export_file {
         let contents = fs::read_to_string(path)?;
@@ -1935,6 +1979,13 @@ fn resolve_export_env(export: Option<&str>, export_file: Option<&Path>) -> Resul
     Ok(env)
 }
 
+fn parse_env_flag(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes"
+    )
+}
+
 fn parse_export_file_contents(contents: &str) -> Result<Vec<(String, String)>> {
     let mut env = Vec::new();
     for line in contents.lines() {
@@ -1943,7 +1994,9 @@ fn parse_export_file_contents(contents: &str) -> Result<Vec<(String, String)>> {
             continue;
         }
         let Some((key, value)) = line.split_once('=') else {
-            return Err(SlotdError::from(format!("invalid export-file entry: {line}")));
+            return Err(SlotdError::from(format!(
+                "invalid export-file entry: {line}"
+            )));
         };
         validate_env_name(key)?;
         env.push((key.to_string(), value.to_string()));
@@ -2004,7 +2057,9 @@ fn validate_env_name(value: &str) -> Result<()> {
             .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
         || value.chars().next().is_some_and(|ch| ch.is_ascii_digit())
     {
-        return Err(SlotdError::from(format!("invalid environment variable name: {value}")));
+        return Err(SlotdError::from(format!(
+            "invalid environment variable name: {value}"
+        )));
     }
     Ok(())
 }
@@ -2051,7 +2106,10 @@ fn parse_signal_name(value: &str) -> Result<i32> {
     Ok(signal as i32)
 }
 
-fn estimate_start_times(config: &AppConfig, jobs: &[JobRecord]) -> std::collections::HashMap<i64, String> {
+fn estimate_start_times(
+    config: &AppConfig,
+    jobs: &[JobRecord],
+) -> std::collections::HashMap<i64, String> {
     let mut result = std::collections::HashMap::new();
     let now = now_ts();
     let running_jobs = jobs
@@ -2082,7 +2140,8 @@ fn estimate_start_times(config: &AppConfig, jobs: &[JobRecord]) -> std::collecti
                 let begin_time = job.begin_time.filter(|value| *value > now);
                 let fits_now = job.requested_cpus.saturating_mul(job.requested_tasks)
                     <= config.total_cpus.saturating_sub(used_cpus)
-                    && job.requested_memory_mb <= config.total_memory_mb.saturating_sub(used_memory_mb)
+                    && job.requested_memory_mb
+                        <= config.total_memory_mb.saturating_sub(used_memory_mb)
                     && job.requested_gpus <= config.total_gpus.saturating_sub(used_gpus);
                 if fits_now {
                     Some(format_timestamp(begin_time.unwrap_or(now)))
@@ -2438,8 +2497,8 @@ mod tests {
     use super::{
         CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
-        load_sbatch_env_overrides_with, merge_batch_directives, parse_signal_name,
-        parse_begin_time, parse_time_filter, parse_warning_signal, resolve_cpu_bind_ids,
+        load_sbatch_env_overrides_with, merge_batch_directives, parse_begin_time,
+        parse_signal_name, parse_time_filter, parse_warning_signal, resolve_cpu_bind_ids,
         resolve_export_spec,
     };
     use crate::config::AppConfig;
@@ -2532,6 +2591,7 @@ mod tests {
             time_limit_secs: Some(600),
             begin: None,
             exclusive: false,
+            requeue: false,
             dependency: None,
             array_spec: None,
             output_path: None,
@@ -2601,6 +2661,20 @@ mod tests {
     }
 
     #[test]
+    fn phase5_sbatch_requeue_environment_overrides_directives() {
+        let env = load_sbatch_env_overrides_with(|name| match name {
+            "SBATCH_REQUEUE" => Some("yes".to_string()),
+            _ => None,
+        });
+        let directives = BatchDirectives {
+            requeue: false,
+            ..BatchDirectives::default()
+        };
+        let merged = merge_batch_directives(&directives, &env.directives);
+        assert!(merged.requeue);
+    }
+
+    #[test]
     fn phase3_constraint_is_shared_and_validated() {
         let config = AppConfig::load();
         let args = ResourceArgs {
@@ -2656,11 +2730,8 @@ mod tests {
 
     #[test]
     fn phase2_export_spec_none_clears_seed_values() {
-        let resolved = resolve_export_spec(
-            "NONE",
-            &[("KEEP".to_string(), "value".to_string())],
-        )
-        .expect("resolve export");
+        let resolved = resolve_export_spec("NONE", &[("KEEP".to_string(), "value".to_string())])
+            .expect("resolve export");
         assert!(resolved.is_empty());
     }
 
@@ -2752,6 +2823,8 @@ mod tests {
             export_env: Vec::new(),
             open_mode: OpenMode::Truncate,
             warning_signal: None,
+            requeue: false,
+            requeue_count: 0,
         }];
 
         let start_times = super::estimate_start_times(&config, &jobs);

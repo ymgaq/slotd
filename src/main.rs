@@ -4,6 +4,7 @@ mod daemon;
 mod error;
 mod ipc;
 mod job;
+mod notify;
 mod output;
 mod recovery;
 mod runner;

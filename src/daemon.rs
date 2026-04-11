@@ -8,6 +8,7 @@ use crate::config::AppConfig;
 use crate::error::Result;
 use crate::ipc::{Request, Response};
 use crate::job::{JobRecord, JobState, SubmitRequest};
+use crate::notify::notify_job;
 use crate::recovery;
 use crate::runner::Runner;
 use crate::store::Store;
@@ -115,13 +116,18 @@ fn dispatch_request(
             term_signal,
             state_reason,
         } => {
-            store.mark_finished(
+            let job = store.mark_finished(
                 job_id,
                 state,
                 exit_code,
                 term_signal,
                 state_reason.as_deref(),
             )?;
+            if job.state.is_terminal() {
+                notify_job(config, &job)?;
+            } else if job.state == JobState::Pending {
+                schedule_pending_jobs(store, runner)?;
+            }
             Response::Submitted { job_id }
         }
         Request::ListJobs {

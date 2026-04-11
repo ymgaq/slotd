@@ -18,6 +18,7 @@ pub struct AppConfig {
     pub total_memory_mb: u64,
     pub total_gpus: u32,
     pub gpu_model: String,
+    pub notify_command: Option<String>,
     pub cgroup_base: Option<PathBuf>,
     features: Vec<String>,
     cpu_partitions: Vec<String>,
@@ -65,6 +66,10 @@ impl AppConfig {
                 .ok()
                 .or(detected_gpus.model)
                 .unwrap_or_else(|| "Generic-GPU".to_string()),
+            notify_command: env::var("SLOTD_NOTIFY_CMD")
+                .ok()
+                .map(|value| value.trim().to_string())
+                .filter(|value| !value.is_empty()),
             cgroup_base: env::var_os("SLOTD_CGROUP_BASE").map(PathBuf::from),
             features,
             cpu_partitions,

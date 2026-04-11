@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS jobs (
     open_mode TEXT NOT NULL DEFAULT 'truncate',
     warning_signal INTEGER,
     warning_signal_seconds INTEGER,
-    constraint TEXT,
-    cpu_bind TEXT
+    [constraint] TEXT,
+    cpu_bind TEXT,
+    requeue INTEGER NOT NULL DEFAULT 0,
+    requeue_count INTEGER NOT NULL DEFAULT 0
 );

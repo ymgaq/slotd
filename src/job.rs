@@ -143,6 +143,8 @@ pub struct JobRecord {
     pub export_env: Vec<(String, String)>,
     pub open_mode: OpenMode,
     pub warning_signal: Option<WarningSignal>,
+    pub requeue: bool,
+    pub requeue_count: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +173,7 @@ pub struct SubmitRequest {
     pub export_env: Vec<(String, String)>,
     pub open_mode: OpenMode,
     pub warning_signal: Option<WarningSignal>,
+    pub requeue: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

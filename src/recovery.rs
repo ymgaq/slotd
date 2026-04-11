@@ -1,5 +1,6 @@
 use crate::error::Result;
 use crate::job::JobState;
+use crate::notify::notify_job;
 use crate::runner::{Runner, process_group_alive_for_recovery};
 use crate::store::Store;
 use std::path::Path;
@@ -26,16 +27,22 @@ pub fn recover(store: &Store, runner: &mut Runner) -> Result<()> {
                     Some(_) => (JobState::Failed, "NonZeroExitCode"),
                     None => (JobState::Failed, "LostAfterRestart"),
                 };
-                store.mark_finished(job.id, state, exit_code, None, Some(reason))?;
+                let job = store.mark_finished(job.id, state, exit_code, None, Some(reason))?;
+                if job.state.is_terminal() {
+                    notify_job(store.config(), &job)?;
+                }
             }
         } else {
-            store.mark_finished(
+            let job = store.mark_finished(
                 job.id,
                 JobState::Failed,
                 None,
                 None,
                 Some("LostAfterRestart"),
             )?;
+            if job.state.is_terminal() {
+                notify_job(store.config(), &job)?;
+            }
         }
     }
 

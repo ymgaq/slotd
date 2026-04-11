@@ -149,6 +149,7 @@ Important record fields:
 - requested CPUs, tasks, memory, GPUs
 - dependency string
 - array metadata
+- requeue flag and requeue count
 - time limit
 - pid, pgid
 - exit code, terminating signal, state reason
@@ -225,8 +226,25 @@ Supported `#SBATCH` directives:
 - `-o`, `--output`
 - `-e`, `--error`
 - `-D`, `--chdir`
+- `--constraint`
+- `--begin`
+- `--exclusive`
+- `--requeue`
 - `-d`, `--dependency`
 - `-a`, `--array`
+
+Environment precedence:
+
+- command-line options override matching `SBATCH_*` environment variables
+- matching `SBATCH_*` environment variables override `#SBATCH` directives
+- `SBATCH_REQUEUE=1|true|yes` enables `sbatch` requeue by default
+
+Phase 5 additions:
+
+- `sbatch --requeue` requeues a top-level job once after `FAILED`, `TIMEOUT`, or `OUT_OF_MEMORY`
+- `COMPLETED` and `CANCELLED` jobs do not auto-requeue
+- `SLOTD_NOTIFY_CMD` registers a best-effort shell hook for terminal top-level job completion
+- the hook receives `SLOTD_JOB_ID`, `SLOTD_JOB_NAME`, `SLOTD_JOB_STATE`, `SLOTD_JOB_PARTITION`, and `SLOTD_JOB_REASON`
 
 ## Output Path Expansion
 

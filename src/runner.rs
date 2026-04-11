@@ -1,8 +1,8 @@
 use std::collections::HashMap;
+use std::fs::OpenOptions;
 use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::fs::OpenOptions;
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
@@ -15,6 +15,7 @@ use nix::unistd::{Pid, setsid};
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::job::{JobRecord, JobState, OpenMode};
+use crate::notify::notify_job;
 use crate::store::Store;
 
 pub struct RunningJob {
@@ -102,7 +103,9 @@ impl Runner {
         let cpu_bind = resolve_cpu_bind_ids(
             job.cpu_bind.as_deref(),
             store.config().total_cpus,
-            job.requested_cpus.saturating_mul(job.requested_tasks).max(1),
+            job.requested_cpus
+                .saturating_mul(job.requested_tasks)
+                .max(1),
         )?;
         // Create a dedicated process group so scancel can terminate the whole tree.
         unsafe {
@@ -164,9 +167,14 @@ impl Runner {
         for (&job_id, running) in &self.jobs {
             if let JobHandle::Adopted = running.handle {
                 if !process_group_alive(running.pgid)? {
-                    let (state, exit_code, reason) =
-                        recovered_terminal_state(&running.status_path, running.cgroup_path.as_deref());
-                    store.mark_finished(job_id, state, exit_code, None, Some(reason))?;
+                    let (state, exit_code, reason) = recovered_terminal_state(
+                        &running.status_path,
+                        running.cgroup_path.as_deref(),
+                    );
+                    let job = store.mark_finished(job_id, state, exit_code, None, Some(reason))?;
+                    if job.state.is_terminal() {
+                        notify_job(store.config(), &job)?;
+                    }
                     cleanup_cgroup(running.cgroup_path.as_deref());
                     finished.push(job_id);
                 }
@@ -198,7 +206,16 @@ impl Runner {
                             term_signal,
                             cgroup_oomed(running.cgroup_path.as_deref()),
                         );
-                        store.mark_finished(job_id, state, exit_code, term_signal, Some(reason))?;
+                        let job = store.mark_finished(
+                            job_id,
+                            state,
+                            exit_code,
+                            term_signal,
+                            Some(reason),
+                        )?;
+                        if job.state.is_terminal() {
+                            notify_job(store.config(), &job)?;
+                        }
                         cleanup_cgroup(running.cgroup_path.as_deref());
                         finished.push(job_id);
                     }
@@ -340,13 +357,16 @@ impl Runner {
         } else {
             (final_state, final_reason)
         };
-        store.mark_finished(
+        let job = store.mark_finished(
             job_id,
             final_state,
             exit_code,
             term_signal,
             Some(final_reason),
         )?;
+        if job.state.is_terminal() {
+            notify_job(store.config(), &job)?;
+        }
         cleanup_cgroup(running.cgroup_path.as_deref());
         Ok(())
     }
@@ -453,7 +473,11 @@ fn resolve_cpu_bind_ids(
     }
     if let Some(list) = normalized.strip_prefix("map_cpu:") {
         let mut cpus = Vec::new();
-        for part in list.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        for part in list
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
             let cpu = part.parse::<usize>().map_err(|_| {
                 crate::error::SlotdError::from(format!("invalid cpu-bind cpu id: {part}"))
             })?;
@@ -495,9 +519,9 @@ fn job_status_path(job: &JobRecord) -> Option<PathBuf> {
     }
     Some(
         Path::new(&job.script_path)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("exit_status"),
+            .parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("exit_status"),
     )
 }
 

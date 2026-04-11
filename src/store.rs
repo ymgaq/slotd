@@ -97,8 +97,8 @@ impl Store {
                 parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                 requested_tasks, requested_gpus, allocation_only, dependency,
                 array_job_id, array_task_id, array_task_count, array_task_limit, submit_time,
-                state_reason, time_limit_secs, begin_time, exclusive, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
-            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)",
+                state_reason, time_limit_secs, begin_time, exclusive, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33)",
             params![
                 Option::<i64>::None,
                 Option::<i64>::None,
@@ -137,6 +137,8 @@ impl Store {
                     .map(|value| value.seconds_before_end as i64),
                 request.constraint.as_deref(),
                 request.cpu_bind.as_deref(),
+                request.requeue,
+                0i64,
             ],
         )?;
 
@@ -225,8 +227,8 @@ impl Store {
                 requested_cpus, requested_memory_mb, requested_tasks, requested_gpus, allocation_only,
                 dependency, array_job_id, array_task_id, array_task_count, array_task_limit,
                 submit_time, start_time, state_reason, time_limit_secs, begin_time, exclusive, script_path, stdout_path, stderr_path,
-                export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
-            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, NULL, 0, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL)",
+                export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, NULL, 0, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL, 0, 0)",
             params![
                 parent_job_id,
                 next_step_id as i64,
@@ -248,7 +250,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
              FROM jobs
              WHERE parent_job_id = ?1
              ORDER BY step_id ASC, id ASC",
@@ -274,7 +276,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
              FROM jobs
              WHERE parent_job_id IS NULL"
         )?;
@@ -300,7 +302,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
              FROM jobs"
         )?;
         let rows = stmt.query_map([], map_job)?;
@@ -317,7 +319,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
              FROM jobs
              WHERE state = 'RUNNING'
              ORDER BY id ASC",
@@ -334,7 +336,7 @@ impl Store {
                         requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                         array_task_id, array_task_count, array_task_limit, max_rss_kb,
                         submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                        assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+                        assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
                  FROM jobs
                  WHERE id = ?1",
                 [job_id],
@@ -350,7 +352,7 @@ impl Store {
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, constraint, cpu_bind
+                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
              FROM jobs
              WHERE state = 'PENDING' AND parent_job_id IS NULL
              ORDER BY id ASC
@@ -404,21 +406,36 @@ impl Store {
         exit_code: Option<i32>,
         term_signal: Option<i32>,
         state_reason: Option<&str>,
-    ) -> Result<()> {
-        self.conn.execute(
-            "UPDATE jobs
-             SET state = ?1, exit_code = ?2, term_signal = ?3, state_reason = ?4, end_time = ?5, assigned_gpus = ''
-             WHERE id = ?6",
-            params![
-                state.as_str(),
-                exit_code,
-                term_signal,
-                state_reason.unwrap_or(""),
-                now_ts(),
-                job_id
-            ],
-        )?;
-        Ok(())
+    ) -> Result<JobRecord> {
+        let job = self
+            .get_job(job_id)?
+            .ok_or_else(|| SlotdError::from(format!("job {job_id} not found")))?;
+        if should_auto_requeue(&job, state) {
+            self.conn.execute(
+                "UPDATE jobs
+                 SET state = 'PENDING', exit_code = NULL, term_signal = NULL, state_reason = 'Requeued',
+                     start_time = NULL, end_time = NULL, pid = NULL, pgid = NULL, assigned_gpus = '',
+                     max_rss_kb = NULL, requeue_count = requeue_count + 1
+                 WHERE id = ?1",
+                [job_id],
+            )?;
+        } else {
+            self.conn.execute(
+                "UPDATE jobs
+                 SET state = ?1, exit_code = ?2, term_signal = ?3, state_reason = ?4, end_time = ?5, assigned_gpus = ''
+                 WHERE id = ?6",
+                params![
+                    state.as_str(),
+                    exit_code,
+                    term_signal,
+                    state_reason.unwrap_or(""),
+                    now_ts(),
+                    job_id
+                ],
+            )?;
+        }
+        self.get_job(job_id)?
+            .ok_or_else(|| SlotdError::from(format!("job {job_id} not found after update")))
     }
 
     pub fn mark_state(
@@ -479,14 +496,20 @@ impl Store {
 
         if let Some(value) = name {
             if job.state != JobState::Pending {
-                return Err(SlotdError::from("job name can only be updated while pending"));
+                return Err(SlotdError::from(
+                    "job name can only be updated while pending",
+                ));
             }
-            self.conn
-                .execute("UPDATE jobs SET name = ?1 WHERE id = ?2", params![value, job_id])?;
+            self.conn.execute(
+                "UPDATE jobs SET name = ?1 WHERE id = ?2",
+                params![value, job_id],
+            )?;
         }
         if let Some(value) = partition {
             if job.state != JobState::Pending {
-                return Err(SlotdError::from("partition can only be updated while pending"));
+                return Err(SlotdError::from(
+                    "partition can only be updated while pending",
+                ));
             }
             self.conn.execute(
                 "UPDATE jobs SET partition = ?1 WHERE id = ?2 AND state = 'PENDING'",
@@ -506,7 +529,9 @@ impl Store {
         }
         if let Some(value) = priority {
             if job.state != JobState::Pending {
-                return Err(SlotdError::from("priority can only be updated while pending"));
+                return Err(SlotdError::from(
+                    "priority can only be updated while pending",
+                ));
             }
             self.conn.execute(
                 "UPDATE jobs SET priority = ?1 WHERE id = ?2",
@@ -765,13 +790,25 @@ impl Store {
             &self.conn,
             "jobs",
             "constraint",
-            "ALTER TABLE jobs ADD COLUMN constraint TEXT",
+            "ALTER TABLE jobs ADD COLUMN [constraint] TEXT",
         )?;
         ensure_column(
             &self.conn,
             "jobs",
             "cpu_bind",
             "ALTER TABLE jobs ADD COLUMN cpu_bind TEXT",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "requeue",
+            "ALTER TABLE jobs ADD COLUMN requeue INTEGER NOT NULL DEFAULT 0",
+        )?;
+        ensure_column(
+            &self.conn,
+            "jobs",
+            "requeue_count",
+            "ALTER TABLE jobs ADD COLUMN requeue_count INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
     }
@@ -956,7 +993,10 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
                     Box::new(SlotdError::from(message)),
                 )
             })?,
-        warning_signal: match (row.get::<_, Option<i32>>(39)?, row.get::<_, Option<i64>>(40)?) {
+        warning_signal: match (
+            row.get::<_, Option<i32>>(39)?,
+            row.get::<_, Option<i64>>(40)?,
+        ) {
             (Some(signal), Some(seconds_before_end)) => Some(WarningSignal {
                 signal,
                 seconds_before_end: seconds_before_end as u64,
@@ -965,7 +1005,19 @@ fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
         },
         constraint: row.get(41)?,
         cpu_bind: row.get(42)?,
+        requeue: row.get::<_, bool>(43)?,
+        requeue_count: row.get::<_, i64>(44)? as u32,
     })
+}
+
+fn should_auto_requeue(job: &JobRecord, final_state: JobState) -> bool {
+    job.parent_job_id.is_none()
+        && job.requeue
+        && job.requeue_count == 0
+        && matches!(
+            final_state,
+            JobState::Failed | JobState::Timeout | JobState::OutOfMemory
+        )
 }
 
 fn now_ts() -> i64 {
@@ -1057,10 +1109,16 @@ fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
 }
 #[cfg(test)]
 mod tests {
-    use super::order_pending_jobs;
-    use crate::job::{JobRecord, JobState, OpenMode};
+    use super::{Store, now_ts, order_pending_jobs};
+    use crate::config::AppConfig;
+    use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
 
-    fn pending_job(id: i64, array_job_id: Option<i64>, priority: i32, submit_time: i64) -> JobRecord {
+    fn pending_job(
+        id: i64,
+        array_job_id: Option<i64>,
+        priority: i32,
+        submit_time: i64,
+    ) -> JobRecord {
         JobRecord {
             id,
             parent_job_id: None,
@@ -1104,6 +1162,8 @@ mod tests {
             export_env: Vec::new(),
             open_mode: OpenMode::Truncate,
             warning_signal: None,
+            requeue: false,
+            requeue_count: 0,
         }
     }
 
@@ -1125,6 +1185,138 @@ mod tests {
         let newer = pending_job(11, None, 100, 100);
         let ordered = order_pending_jobs(vec![older, newer]);
         assert_eq!(ordered[0].id, 11);
+    }
+
+    #[test]
+    fn phase5_requeues_failed_job_once() {
+        let root = std::env::temp_dir().join(format!(
+            "slotd-phase5-requeue-{}-{}",
+            std::process::id(),
+            now_ts()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp root");
+        unsafe {
+            std::env::set_var("SLOTD_ROOT", &root);
+        }
+        let store = Store::open(AppConfig::load()).expect("open store");
+        let request = SubmitRequest {
+            name: Some("demo".to_string()),
+            user_name: "test".to_string(),
+            partition: store.config().default_partition().to_string(),
+            cwd: root.to_string_lossy().to_string(),
+            script_name: "job.sh".to_string(),
+            script_body: "#!/usr/bin/env bash\nexit 1\n".to_string(),
+            command_override: None,
+            requested_cpus: 1,
+            requested_tasks: 1,
+            requested_memory_mb: 64,
+            requested_gpus: 0,
+            allocation_only: false,
+            dependency: None,
+            array_spec: None,
+            time_limit_secs: None,
+            begin_time: None,
+            exclusive: false,
+            stdout_path: None,
+            stderr_path: None,
+            constraint: None,
+            cpu_bind: None,
+            export_env: Vec::new(),
+            open_mode: OpenMode::Truncate,
+            warning_signal: None,
+            requeue: true,
+        };
+
+        let job_id = store.create_job(request).expect("create job");
+        let job = store
+            .mark_finished(
+                job_id,
+                JobState::Failed,
+                Some(1),
+                None,
+                Some("NonZeroExitCode"),
+            )
+            .expect("first finish");
+        assert_eq!(job.state, JobState::Pending);
+        assert_eq!(job.state_reason.as_deref(), Some("Requeued"));
+        assert_eq!(job.requeue_count, 1);
+        assert_eq!(job.exit_code, None);
+
+        let job = store
+            .mark_finished(
+                job_id,
+                JobState::Failed,
+                Some(1),
+                None,
+                Some("NonZeroExitCode"),
+            )
+            .expect("second finish");
+        assert_eq!(job.state, JobState::Failed);
+        assert_eq!(job.requeue_count, 1);
+
+        std::fs::remove_dir_all(&root).expect("remove temp root");
+        unsafe {
+            std::env::remove_var("SLOTD_ROOT");
+        }
+    }
+
+    #[test]
+    fn phase5_does_not_requeue_cancelled_job() {
+        let root = std::env::temp_dir().join(format!(
+            "slotd-phase5-cancel-{}-{}",
+            std::process::id(),
+            now_ts()
+        ));
+        std::fs::create_dir_all(&root).expect("create temp root");
+        unsafe {
+            std::env::set_var("SLOTD_ROOT", &root);
+        }
+        let store = Store::open(AppConfig::load()).expect("open store");
+        let request = SubmitRequest {
+            name: Some("demo".to_string()),
+            user_name: "test".to_string(),
+            partition: store.config().default_partition().to_string(),
+            cwd: root.to_string_lossy().to_string(),
+            script_name: "job.sh".to_string(),
+            script_body: "#!/usr/bin/env bash\nsleep 1\n".to_string(),
+            command_override: None,
+            requested_cpus: 1,
+            requested_tasks: 1,
+            requested_memory_mb: 64,
+            requested_gpus: 0,
+            allocation_only: false,
+            dependency: None,
+            array_spec: None,
+            time_limit_secs: None,
+            begin_time: None,
+            exclusive: false,
+            stdout_path: None,
+            stderr_path: None,
+            constraint: None,
+            cpu_bind: None,
+            export_env: Vec::new(),
+            open_mode: OpenMode::Truncate,
+            warning_signal: None,
+            requeue: true,
+        };
+
+        let job_id = store.create_job(request).expect("create job");
+        let job = store
+            .mark_finished(
+                job_id,
+                JobState::Cancelled,
+                None,
+                Some(15),
+                Some("CancelledByUser"),
+            )
+            .expect("finish");
+        assert_eq!(job.state, JobState::Cancelled);
+        assert_eq!(job.requeue_count, 0);
+
+        std::fs::remove_dir_all(&root).expect("remove temp root");
+        unsafe {
+            std::env::remove_var("SLOTD_ROOT");
+        }
     }
 }
 

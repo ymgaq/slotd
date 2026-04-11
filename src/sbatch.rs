@@ -14,6 +14,7 @@ pub struct BatchDirectives {
     pub time_limit_secs: Option<u64>,
     pub begin: Option<String>,
     pub exclusive: bool,
+    pub requeue: bool,
     pub dependency: Option<String>,
     pub array_spec: Option<String>,
     pub output_path: Option<String>,
@@ -271,6 +272,9 @@ fn apply_tokens(directives: &mut BatchDirectives, tokens: &[String]) -> Result<(
         } else if token == "--exclusive" {
             directives.exclusive = true;
             1
+        } else if token == "--requeue" {
+            directives.requeue = true;
+            1
         } else if let Some(value) = token.strip_prefix("--time=") {
             directives.time_limit_secs = Some(parse_time_limit_secs(value)?);
             1
@@ -464,6 +468,16 @@ echo hi
         let directives = parse_directives(script).expect("parse directives");
         assert_eq!(directives.begin.as_deref(), Some("now+00:10:00"));
         assert!(directives.exclusive);
+    }
+
+    #[test]
+    fn parses_requeue_directive() {
+        let script = "\
+#SBATCH --requeue
+echo hi
+";
+        let directives = parse_directives(script).expect("parse directives");
+        assert!(directives.requeue);
     }
 
     #[test]

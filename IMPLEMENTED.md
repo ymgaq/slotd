@@ -105,8 +105,16 @@ Reason and termination tracking:
 
 - jobs store a `state_reason`
 - jobs store a terminating signal separately from numeric exit code
-- jobs store dependency expressions, array metadata, and peak RSS when observed
+- jobs store dependency expressions, array metadata, requeue metadata, and peak RSS when observed
 - queue and accounting output use these richer terminal details where available
+- jobs submitted with `--requeue` automatically re-enter `PENDING` once after `FAILED`, `TIMEOUT`, or `OUT_OF_MEMORY`
+- `COMPLETED` and `CANCELLED` jobs are never auto-requeued
+
+Notification behavior:
+
+- when `SLOTD_NOTIFY_CMD` is set, terminal top-level job completion spawns that shell command
+- the hook receives `SLOTD_JOB_ID`, `SLOTD_JOB_NAME`, `SLOTD_JOB_STATE`, `SLOTD_JOB_PARTITION`, and `SLOTD_JOB_REASON`
+- requeued intermediate failures do not trigger the notification hook
 
 ## Scheduling Behavior
 
@@ -204,6 +212,7 @@ Supported CLI options:
 - `--signal`
 - `--begin`
 - `--exclusive`
+- `--requeue`
 - `--parsable`
 - `-W`, `--wait`
 
@@ -222,6 +231,7 @@ Supported `#SBATCH` directives in script contents:
 - `--constraint`
 - `--begin`
 - `--exclusive`
+- `--requeue`
 - `-d`, `--dependency`
 - `-a`, `--array`
 
