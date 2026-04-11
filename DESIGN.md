@@ -613,6 +613,117 @@ This phase broadens normal user workflows without requiring distributed design.
 These features are valuable, but they should follow the interface and semantic
 alignment work above.
 
+### Phase 6: Make `srun` Feel Like `srun`
+
+1. make foreground `srun` use inherited stdio by default when output is not redirected
+2. support `--pty` as an interactive foreground mode
+3. allow `srun` inside a running allocation to behave like a local job step
+4. improve `squeue`, `sacct`, and `sinfo` format handling to accept a useful `%`-style subset
+5. improve detailed inspection output to include TRES-style resource summaries
+
+This phase matters because `srun` is the most visible day-to-day command and the
+main place where Slurm users notice semantic drift immediately.
+
+### Phase 7: Separate Job and Step Semantics
+
+1. introduce an explicit step model instead of treating every foreground command as just another job
+2. record allocation-backed `srun` executions as steps tied to a parent job or allocation
+3. assign step IDs rather than hardcoding a single `SLURM_STEP_ID`
+4. expose job and step relationships in `sacct` and `scontrol`
+5. define how cancellation should behave for a whole job versus one step
+
+Completion criteria:
+
+- multiple `srun` calls inside one `salloc` session are recorded distinctly
+- accounting no longer loses the relationship between allocation and step execution
+- `scontrol show job` can explain parent and child execution context
+
+### Phase 8: Finish Runtime Enforcement
+
+1. make cgroup v2 setup rules explicit and reliable
+2. enforce memory limits consistently and report OOM outcomes with high confidence
+3. improve CPU quota behavior so it matches requested CPU shape more closely
+4. bring foreground allocation-backed execution under the same enforcement rules
+5. define cleanup behavior for failed or partially configured cgroups
+
+Completion criteria:
+
+- `sbatch`, `salloc`, and interactive `srun` all use one consistent enforcement model
+- OOM conditions become stable `OUT_OF_MEMORY` outcomes instead of generic failures
+- enabling cgroup enforcement yields deterministic behavior rather than best-effort behavior
+
+### Phase 9: Improve Recovery and Restart Semantics
+
+1. make adopted running jobs recover to more accurate terminal states after daemon restart
+2. preserve timeout and cancellation behavior across daemon restart
+3. detect and clean up orphaned process groups and orphaned cgroups more safely
+4. reduce cases where restart forces a terminal job into generic `FAILED`
+5. make allocation-backed foreground jobs recover more coherently
+
+Completion criteria:
+
+- restart no longer turns a large fraction of active jobs into generic `FAILED`
+- adopted jobs keep more faithful final state and reason information
+- queue state remains coherent without manual intervention after daemon restart
+
+### Phase 10: Finish Output and CLI Compatibility
+
+1. extend `%`-style `--format` coverage for `squeue`, `sacct`, and `sinfo`
+2. align field widths, names, and right-alignment behavior more closely with Slurm defaults
+3. improve reason text, `NODELIST(REASON)`, and array display behavior
+4. add more high-value fields such as `Submit`, `Start`, `End`, `ReqTRES`, `AllocTRES`, and `WorkDir`
+5. reduce remaining custom output behaviors where Slurm conventions are practical
+
+Completion criteria:
+
+- common `-o/--format` usage from existing Slurm habits works with little or no relearning
+- default output looks recognizably Slurm-like for queue, accounting, and node inspection commands
+
+### Phase 11: Add Minimal Management Operations
+
+1. add a minimal `scontrol update job` subset
+2. add hold and release semantics for pending jobs
+3. define mutable versus immutable job fields after submission
+4. expose management actions in a way that matches Slurm naming and expectations
+5. keep state transitions explicit rather than relying on undocumented side effects
+
+Completion criteria:
+
+- users can hold, release, and lightly update jobs without editing the database or restarting the daemon
+- management operations preserve queue consistency and state reason correctness
+
+### Phase 12: Improve Scheduler Quality
+
+1. move beyond strict FIFO where it creates starvation in the presence of arrays or long allocations
+2. account for dependency-heavy and array-heavy workloads more fairly
+3. make partition admission and pending reasons more predictable under mixed workloads
+4. prepare the scheduler internals for later priority support without rewriting persistence
+5. keep policy changes observable through queue reason and accounting output
+
+Completion criteria:
+
+- array submissions do not starve unrelated short jobs indefinitely
+- pending reasons remain understandable even under mixed workloads
+- the scheduler remains simple, but not brittle
+
+## Next Implementation Order
+
+The recommended order for future work is:
+
+1. Phase 7
+2. Phase 8
+3. Phase 9
+4. Phase 10
+5. Phase 11
+6. Phase 12
+
+This order is intentional.
+
+The internal execution model should be stabilized before further polishing CLI
+output, because output compatibility depends on step/accounting correctness.
+Recovery should also improve before adding more management features, otherwise
+administrative operations will rest on unstable runtime state.
+
 ## Final Recommendation
 
 The most practical design for `slotd` is:
