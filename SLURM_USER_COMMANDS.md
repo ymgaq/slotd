@@ -1,11 +1,22 @@
-# Slurmユーザー向けコマンド・オプション・`#SBATCH`ディレクティブ調査メモ
+# Slurmユーザー向けコマンド・オプション・`#SBATCH`ディレクティブ総覧
 
-この文書は、Slurmを利用する一般ユーザーが日常的に使うコマンド、主要オプション、`sbatch`および`#SBATCH`ディレクティブの挙動を整理したものです。内容は主にSchedMD公式ドキュメントを元に要約しています。
+この文書は、Slurm 25.11 の SchedMD 公式ドキュメントに基づき、一般利用者が参照するコマンド群、主要オプション、`sbatch`/`srun`/`salloc` の資源指定モデル、監視・会計・制御系コマンド、ジョブ状態、主要環境変数を整理したものです。`slotd` との差分や実装状況は考慮しません。
+
+重要な前提:
+
+- Slurm はサイトローカル設定の影響が非常に大きい
+- 公式に存在するオプションでも、クラスタ設定により無効化・制限・既定値変更されうる
+- `account`、`qos`、`partition`、`constraint`、`gres`、GPU 名、会計項目、メール通知、コンテナ機能などはサイト設定依存
+- 本書は公式仕様を整理したものであり、最終的な挙動は対象クラスタの運用ポリシーが優先される
 
 参照元:
 
 - [Slurm Manual Index](https://slurm.schedmd.com/man_index.html)
+- [Overview](https://slurm.schedmd.com/overview.html)
 - [Quick Start User Guide](https://slurm.schedmd.com/quickstart.html)
+- [CPU Management](https://slurm.schedmd.com/cpu_management.html)
+- [Heterogeneous Jobs](https://slurm.schedmd.com/heterogeneous_jobs.html)
+- [Job State Codes](https://slurm.schedmd.com/job_state_codes.html)
 - [`sbatch`](https://slurm.schedmd.com/sbatch.html)
 - [`srun`](https://slurm.schedmd.com/srun.html)
 - [`salloc`](https://slurm.schedmd.com/salloc.html)
@@ -13,34 +24,123 @@
 - [`scancel`](https://slurm.schedmd.com/scancel.html)
 - [`sacct`](https://slurm.schedmd.com/sacct.html)
 - [`sinfo`](https://slurm.schedmd.com/sinfo.html)
-- [Job State Codes](https://slurm.schedmd.com/job_state_codes.html)
+- [`scontrol`](https://slurm.schedmd.com/scontrol.html)
+- [`sattach`](https://slurm.schedmd.com/sattach.html)
+- [`sbcast`](https://slurm.schedmd.com/sbcast.html)
+- [`sprio`](https://slurm.schedmd.com/sprio.html)
+- [`sshare`](https://slurm.schedmd.com/sshare.html)
+- [`sstat`](https://slurm.schedmd.com/sstat.html)
+- [`scrontab`](https://slurm.schedmd.com/scrontab.html)
 
-## 1. まず把握すべきSlurmコマンド
+## 1. Slurm公式マニュアルにあるコマンド一覧
 
-Slurm利用者が主に触るコマンドは次です。
+Slurm 25.11 の man index の `Commands` セクションに掲載されているコマンドは次のとおりです。
 
-| コマンド | 役割 | 典型例 |
+| コマンド | 公式説明の要点 | 一般ユーザー視点での位置づけ |
 | --- | --- | --- |
-| `sbatch` | バッチジョブをキューに投入する | `sbatch job.sh` |
-| `srun` | 対話実行、または割り当て内でジョブステップを起動する | `srun -n 4 hostname` |
-| `salloc` | 対話用に資源だけ先に確保する | `salloc -N 1 -n 4` |
-| `squeue` | 待機中・実行中ジョブを見る | `squeue -u "$USER"` |
-| `scancel` | ジョブをキャンセルする、またはシグナル送信する | `scancel 12345` |
-| `sacct` | 終了済みを含む履歴・会計情報を見る | `sacct -j 12345` |
-| `sinfo` | パーティション・ノード状態を見る | `sinfo` |
-| `scontrol` | ジョブやノードの詳細参照、限定的な変更を行う | `scontrol show job 12345` |
+| `sacct` | 会計ログ / DB からジョブ・ステップ履歴を表示 | 終了後の解析で必須 |
+| `sacctmgr` | アカウント情報の閲覧・変更 | 多くは管理者向け |
+| `salloc` | ジョブ割り当てを取得し、コマンド実行後に解放 | 対話利用向け |
+| `sattach` | ジョブステップへ接続 | 実行中ステップの I/O 接続 |
+| `sbatch` | バッチスクリプト投入 | バッチ実行の中心 |
+| `sbcast` | 割り当てノードへファイル配布 | 補助ツール |
+| `scancel` | ジョブ / ステップへシグナル送信・取消 | 停止・制御 |
+| `scontrol` | Slurm の状態・設定の表示 / 変更 | 詳細確認や一部操作 |
+| `scrontab` | Slurm crontab 管理 | 定期ジョブ |
+| `scrun` | Slurm 用 OCI runtime proxy | 主にコンテナ統合向け |
+| `sdiag` | スケジューリング診断 | 管理・診断寄り |
+| `sh5util` | `acct_gather_profile` 用ユーティリティ | 補助ツール |
+| `sinfo` | ノード・パーティション情報表示 | 資源把握 |
+| `sprio` | ジョブ優先度の内訳表示 | 待ち行列解析 |
+| `squeue` | キュー中ジョブ表示 | 現在状態の確認で必須 |
+| `sreport` | 会計データからレポート生成 | 管理・分析寄り |
+| `srun` | 並列ジョブ実行 | 対話 / ジョブステップ起動 |
+| `sshare` | association share 表示 | fairshare 確認 |
+| `sstat` | 実行中ジョブ / ステップ統計表示 | 実行中解析 |
+| `strigger` | trigger 情報の設定 / 取得 / クリア | 管理寄り |
+| `sview` | GUI フロントエンド | GUI 利用時 |
 
-実務上の流れは概ね次です。
+一般利用者が日常的に使う中心コマンドは次です。
 
-1. `sbatch`または`salloc`/`srun`で実行を依頼する
-2. `squeue`で待ち・実行状態を確認する
-3. 必要なら`scancel`で停止する
-4. 終了後は`sacct`で結果と終了理由を確認する
-5. 資源状況は`sinfo`や`scontrol show job`で深掘りする
+- `sbatch`
+- `srun`
+- `salloc`
+- `squeue`
+- `scancel`
+- `sacct`
+- `sinfo`
+- `scontrol`
+- `sstat`
+- `sprio`
+- `sshare`
 
-## 2. `sbatch`の位置づけ
+## 2. まず押さえるSlurmの実行モデル
 
-`sbatch`はバッチスクリプトをSlurmコントローラへ登録するコマンドです。投入が成功するとジョブIDが返り、実際の実行は後続のスケジューリングに委ねられます。
+Slurm 利用で混乱しやすいのは、`job`、`allocation`、`step` が別概念である点です。
+
+| 概念 | 説明 |
+| --- | --- |
+| job | Slurm が管理するジョブ単位。`sbatch` や `salloc` や `srun` で作られる |
+| allocation | ノード / CPU / メモリ / GRES 等の資源割り当て |
+| step | 割り当て内で `srun` が起動する実行単位 |
+| batch job | `sbatch` で投入されるバッチスクリプト実行 |
+| interactive allocation | `salloc` で先に資源だけ確保する利用形態 |
+| array job | 同一定義の複数タスク群を一つのジョブ群として扱う仕組み |
+| heterogeneous job | コンポーネントごとに異なる資源要求を持つ複合ジョブ |
+
+典型的な流れ:
+
+1. `sbatch` でバッチ投入する、または `salloc` で資源確保する
+2. `squeue` で待ち / 実行状況を見る
+3. 実行中は `sstat`、終了後は `sacct` で結果を見る
+4. 必要なら `scancel` で停止する
+5. 深掘りは `scontrol show job <jobid>`、優先度解析は `sprio`、fairshare は `sshare`
+
+## 3. `sbatch` / `#SBATCH` / 環境変数の優先順位
+
+`sbatch` は CLI オプション、スクリプト内 `#SBATCH` ディレクティブ、`SBATCH_*` 環境変数の三層を持ちます。公式には次の順で優先されます。
+
+1. `sbatch` コマンドライン引数
+2. 環境変数
+3. `#SBATCH` ディレクティブ
+
+つまり、既存のシェル環境で `SBATCH_PARTITION=gpu` などを設定していると、スクリプト内指定よりそちらが優先されます。
+
+## 4. `#SBATCH`ディレクティブの公式仕様
+
+`#SBATCH` は `sbatch` オプションをスクリプト冒頭のコメント領域に書く仕組みです。
+
+重要な規則:
+
+- `#SBATCH` で始まる行のみ解釈される
+- 先頭の連続したコメント / 空行 / shebang 領域のみが対象
+- 最初の「空行でもコメントでもない行」に到達すると、その後ろの `#SBATCH` は無視される
+- `#SBATCH` 行はシェル構文ではなく、シェル変数展開やコマンド置換はされない
+- コマンドライン引数が同一指定を上書きする
+
+有効な例:
+
+```bash
+#!/bin/bash
+#SBATCH --job-name=train
+#SBATCH --partition=gpu
+#SBATCH --gpus=1
+
+set -euo pipefail
+srun python train.py
+```
+
+無効化される例:
+
+```bash
+#!/bin/bash
+echo start
+#SBATCH --time=10:00
+```
+
+## 5. `sbatch`の役割と基本仕様
+
+`sbatch` はバッチスクリプトを Slurm へ登録するコマンドです。成功するとジョブ ID を返し、実行は後続のスケジューリングに委ねられます。
 
 基本形:
 
@@ -48,7 +148,7 @@ Slurm利用者が主に触るコマンドは次です。
 sbatch [options] script [args...]
 ```
 
-標準入力から与えることもできます。
+標準入力からも投入できます。
 
 ```bash
 sbatch <<'EOF'
@@ -57,174 +157,145 @@ hostname
 EOF
 ```
 
-1行コマンドだけなら`--wrap`も使えます。
+1 行コマンドなら `--wrap` が使えます。
 
 ```bash
 sbatch --wrap="python train.py --epochs 10"
 ```
 
-ポイント:
-
-- `sbatch`自体は通常すぐ終了する
-- ジョブは資源が空くまで`PENDING`になりうる
-- ジョブスクリプト内では通常のシェルスクリプトとして処理が進む
-- 実処理の起動に`srun`を使う構成が一般的
-
-## 3. `sbatch`スクリプトの基本例
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=train
-#SBATCH --partition=gpu
-#SBATCH --gpus=1
-#SBATCH --cpus-per-task=8
-#SBATCH --mem=32G
-#SBATCH --time=04:00:00
-#SBATCH --output=logs/%j.out
-#SBATCH --error=logs/%j.err
-
-set -euo pipefail
-
-echo "job id: $SLURM_JOB_ID"
-srun python train.py
-```
-
-## 4. `#SBATCH`ディレクティブの解釈規則
-
-`#SBATCH`は、スクリプト内に書く`sbatch`オプションです。CLIに書くのと同種の指定をファイル内へ埋め込めます。
-
-重要な規則:
-
-- `#SBATCH`で始まる行だけがディレクティブとして扱われる
-- 解釈されるのはスクリプト冒頭の連続したコメント領域だけ
-- 最初の「空行でもコメントでもない行」に到達した時点で、その後ろの`#SBATCH`は無視される
-- `#SBATCH`行はシェルによって評価されない
-- そのため、シェル変数展開やコマンド置換を期待してはいけない
-
-無視される例:
-
-```bash
-#!/bin/bash
-echo start
-#SBATCH --time=10:00
-```
-
-この`#SBATCH --time=10:00`は有効になりません。
-
-安全な書き方:
-
-```bash
-#!/bin/bash
-#SBATCH --time=10:00
-#SBATCH --mem=8G
-
-echo start
-```
-
-## 5. オプションの優先順位
-
-実運用上は次の順で優先されると理解しておくとよいです。
-
-1. `sbatch`コマンドライン引数
-2. `#SBATCH`ディレクティブ
-3. `SBATCH_*`系環境変数
-4. クラスタの既定設定
-
-例:
-
-```bash
-sbatch --job-name=cli-name job.sh
-```
-
-```bash
-#!/bin/bash
-#SBATCH --job-name=script-name
-```
-
-この場合、最終的なジョブ名は`cli-name`です。
-
-## 6. `sbatch`の主要オプション
-
-### 6.1 ジョブ識別
-
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-J`, `--job-name=<name>` | ジョブ名を指定 | `sbatch -J train job.sh` |
-| `--comment=<string>` | コメント文字列を付与 | `sbatch --comment=exp42 job.sh` |
-| `--wckey=<key>` | Workload Characterization Keyを指定 | `sbatch --wckey=teamA job.sh` |
-
 補足:
 
-- ジョブ名の既定値は通常スクリプト名
-- 標準入力から読む場合の既定ジョブ名は`sbatch`
+- `sbatch` 自体は通常すぐ終了する
+- 返るのは投入結果であり、実行完了ではない
+- `-W`, `--wait` を使うとジョブ終了まで待てる
+- `--parsable` は自動処理向けの出力に便利
+- `sbatch` は heterogeneous jobs を `:` 区切りで表現できる
 
-### 6.2 パーティション・アカウント・QoS
+## 6. `sbatch`オプション総覧
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-p`, `--partition=<names>` | パーティション指定 | `sbatch -p gpu job.sh` |
-| `-A`, `--account=<account>` | 課金・利用枠アカウント指定 | `sbatch -A proj123 job.sh` |
-| `--qos=<qos>` | QoS指定 | `sbatch --qos=high job.sh` |
-| `--reservation=<name>` | 予約済み資源を使う | `sbatch --reservation=maint job.sh` |
+`sbatch` のオプションは非常に多いので、公式 man page に沿ってカテゴリ別に整理します。`srun` / `salloc` と共有されるものが多く、特に資源要求系・配置系・環境系は三者で共通性があります。
 
-補足:
+### 6.1 識別・メタデータ
 
-- `--partition`はカンマ区切り複数指定が可能
-- 実際に使える`account`や`qos`はクラスタ側設定に依存する
+| オプション | 内容 |
+| --- | --- |
+| `-J`, `--job-name=<name>` | ジョブ名 |
+| `--comment=<string>` | コメント文字列 |
+| `--wckey=<key>` | workload characterization key |
+| `--mcs-label=<label>` | MCS ラベル |
+| `--nice[=<adjustment>]` | 優先度調整 |
+| `--priority=<value>` | 優先度指定 |
 
-### 6.3 CPU・タスク・ノード関連
+### 6.2 会計・所属・キュー属性
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-N`, `--nodes=<min[-max]>` | 必要ノード数 | `sbatch -N 2 job.sh` |
-| `-n`, `--ntasks=<num>` | 総タスク数 | `sbatch -n 16 job.sh` |
-| `-c`, `--cpus-per-task=<n>` | 1タスクあたりCPU数 | `sbatch -c 8 job.sh` |
-| `--ntasks-per-node=<n>` | 1ノードあたりタスク数 | `sbatch --ntasks-per-node=4 job.sh` |
-| `--ntasks-per-core=<n>` | 1コアあたりタスク数 | `sbatch --ntasks-per-core=1 job.sh` |
-| `--threads-per-core=<n>` | コアあたりスレッド数 | `sbatch --threads-per-core=1 job.sh` |
-| `--hint=<type>` | バインディングやSMTのヒント | `sbatch --hint=nomultithread job.sh` |
-| `--exclusive` | ノード占有 | `sbatch --exclusive job.sh` |
-| `--oversubscribe` | オーバーサブスクライブ許可 | `sbatch --oversubscribe job.sh` |
+| オプション | 内容 |
+| --- | --- |
+| `-A`, `--account=<account>` | 会計アカウント |
+| `-p`, `--partition=<names>` | パーティション |
+| `--qos=<qos>` | QoS |
+| `--reservation=<name>` | 予約済み資源の利用 |
+| `-M`, `--clusters=<names>` | 対象クラスタ |
+| `--licenses=<spec>` | ライセンス要求 |
+| `--profile=<types>` | profiling / acct_gather_profile |
+
+### 6.3 ノード・タスク・CPU 数
+
+| オプション | 内容 |
+| --- | --- |
+| `-N`, `--nodes=<min[-max]>` | ノード数 |
+| `-n`, `--ntasks=<number>` | 総タスク数 |
+| `-c`, `--cpus-per-task=<n>` | タスクあたり CPU 数 |
+| `--cpus-per-gpu=<n>` | GPU あたり CPU 数 |
+| `--ntasks-per-node=<n>` | ノードあたりタスク数 |
+| `--ntasks-per-socket=<n>` | ソケットあたりタスク数 |
+| `--ntasks-per-core=<n>` | コアあたりタスク数 |
+| `--ntasks-per-gpu=<n>` | GPU あたりタスク数 |
+| `--mincpus=<n>` | ノードごとの最小 CPU 数 |
+| `--sockets-per-node=<n>` | ノードごとのソケット数制約 |
+| `--cores-per-socket=<n>` | ソケットごとのコア数制約 |
+| `--threads-per-core=<n>` | コアごとのスレッド数制約 |
+| `--hint=<type>` | SMT / binding ヒント |
+| `--extra-node-info=<sockets[:cores[:threads]]>` | 追加トポロジ制約 |
 
 考え方:
 
-- `--ntasks`はプロセス数に近い
-- `--cpus-per-task`は各プロセスに必要なCPU数
-- MPI系は`--ntasks`
-- OpenMPやスレッド並列は`--cpus-per-task`
-- 両方使うハイブリッド構成では両者を明示する
+- `--ntasks` は MPI ランク数やプロセス数に近い
+- `--cpus-per-task` は 1 タスクが専有する CPU 数
+- OpenMP 系は `--cpus-per-task`
+- MPI 系は `--ntasks`
+- ハイブリッドは両方明示する
 
-### 6.4 メモリ・GPU・GRES
+### 6.4 メモリ・一時ディスク
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `--mem=<size>` | ノードあたりメモリ量 | `sbatch --mem=64G job.sh` |
-| `--mem-per-cpu=<size>` | CPUあたりメモリ量 | `sbatch --mem-per-cpu=4G job.sh` |
-| `--mem-per-gpu=<size>` | GPUあたりメモリ量 | `sbatch --mem-per-gpu=16G job.sh` |
-| `-G`, `--gpus=[type:]<n>` | GPU数指定 | `sbatch --gpus=a100:2 job.sh` |
-| `--gpus-per-node=[type:]<n>` | ノードあたりGPU数 | `sbatch --gpus-per-node=4 job.sh` |
-| `--gpus-per-task=[type:]<n>` | タスクあたりGPU数 | `sbatch --gpus-per-task=1 job.sh` |
-| `--gres=<name[:type]:count>` | 汎用資源指定 | `sbatch --gres=gpu:2 job.sh` |
-| `--constraint=<features>` | ノード属性制約 | `sbatch --constraint=avx512 job.sh` |
+| オプション | 内容 |
+| --- | --- |
+| `--mem=<size>` | ノードあたりメモリ |
+| `--mem-per-cpu=<size>` | CPU あたりメモリ |
+| `--mem-per-gpu=<size>` | GPU あたりメモリ |
+| `--tmp=<size>` | ノードあたり一時ディスク量 |
+| `--mem-bind=<type>` | NUMA / メモリバインド |
 
 補足:
 
-- `--mem`, `--mem-per-cpu`, `--mem-per-gpu`は排他的に扱う
-- メモリ単位は通常`K`, `M`, `G`, `T`
-- 既定単位はMB
-- GPU系オプションの可否と書式はクラスタ設定に依存する
-- GRESはGPU以外のライセンスや特殊デバイスにも使われる
+- `--mem`、`--mem-per-cpu`、`--mem-per-gpu` は意図的に使い分ける
+- 単位は通常 `K`, `M`, `G`, `T`
+- 既定単位や上限はクラスタ設定依存
 
-### 6.5 実行時間・開始時刻・期限
+### 6.5 GPU・GRES・TRES
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-t`, `--time=<time>` | 制限時間 | `sbatch -t 02:30:00 job.sh` |
-| `--time-min=<time>` | 許容最小時間 | `sbatch --time=4:00:00 --time-min=2:00:00 job.sh` |
-| `--begin=<time>` | 指定時刻まで開始しない | `sbatch --begin=now+1hour job.sh` |
-| `--deadline=<time>` | この時刻までに開始できないなら不適格 | `sbatch --deadline=2026-04-12T12:00:00 job.sh` |
+| オプション | 内容 |
+| --- | --- |
+| `-G`, `--gpus=[type:]<number>` | 総 GPU 数 |
+| `--gpus-per-node=[type:]<number>` | ノードあたり GPU 数 |
+| `--gpus-per-socket=[type:]<number>` | ソケットあたり GPU 数 |
+| `--gpus-per-task=[type:]<number>` | タスクあたり GPU 数 |
+| `--gpu-bind=[verbose,]<type>` | GPU バインド |
+| `--gpu-freq=[<type]=value>[,verbose]` | GPU 周波数要求 |
+| `--gres=<name[:type]:count>` | generic resources |
+| `--gres-flags=<opts>` | GRES の割り当て挙動 |
+| `--tres-bind=<tres>:[verbose,]<type>` | TRES バインド |
+| `--tres-per-task=<tres_spec>` | タスクあたり TRES |
 
-時間指定の代表例:
+補足:
+
+- 公式 docs では GPU 指定と GRES 指定が併存する
+- GPU オプションの解釈は `select/cons_tres`、`gres.conf`、サイト設定に依存
+- `--gpu-bind` は内部的に `--tres-bind=gres/gpu:...` と対応する
+
+### 6.6 ノード選択・配置・共有
+
+| オプション | 内容 |
+| --- | --- |
+| `-w`, `--nodelist=<nodes>` | 利用ノード指定 |
+| `-x`, `--exclude=<nodes>` | 除外ノード指定 |
+| `-C`, `--constraint=<features>` | feature 制約 |
+| `--prefer=<features>` | 希望 feature |
+| `--contiguous` | 連続ノード要求 |
+| `-m`, `--distribution=<spec>` | タスク分布方式 |
+| `--exclusive[=<user|mcs|topo>]` | 排他割り当て |
+| `--oversubscribe` | over-subscribe を許容 |
+| `--overcommit` | CPU overcommit |
+| `--spread-job` | ジョブを広く分散 |
+| `--switches[=<count>[@max-time]]` | ネットワークトポロジ制約 |
+| `--network=<spec>` | ネットワーク要求 |
+| `--core-spec=<n>` | specialized cores |
+| `--thread-spec=<n>` | specialized threads |
+| `--delay-boot=<minutes>` | reboot を伴うノード選定の遅延 |
+| `--no-kill` | ノード障害時に全体終了しない |
+
+### 6.7 時刻・期間・再投入
+
+| オプション | 内容 |
+| --- | --- |
+| `-t`, `--time=<time>` | 制限時間 |
+| `--time-min=<time>` | 許容最小時間 |
+| `--begin=<time>` | 開始抑止時刻 |
+| `--deadline=<time>` | この時刻までに開始できなければ不適格 |
+| `--requeue` | 再キュー許可 |
+| `--no-requeue` | 再キュー禁止 |
+| `--signal=<spec>` | 終了前シグナル送信 |
+
+時間指定の代表形式:
 
 - `minutes`
 - `minutes:seconds`
@@ -233,56 +304,38 @@ sbatch --job-name=cli-name job.sh
 - `days-hours:minutes`
 - `days-hours:minutes:seconds`
 
-例:
+### 6.8 依存関係・保留・即時性
 
-```bash
-sbatch -t 90 job.sh
-sbatch -t 01:30:00 job.sh
-sbatch -t 2-00:00:00 job.sh
-sbatch --begin=tomorrow+08:00 job.sh
-```
+| オプション | 内容 |
+| --- | --- |
+| `-d`, `--dependency=<spec>` | 他ジョブ依存 |
+| `--kill-on-invalid-dep=<yes|no>` | 不正依存の扱い |
+| `-H`, `--hold` | 保留状態で投入 |
+| `--hold` | 同上 |
+| `-I`, `--immediate[=<seconds>]` | 即時割り当て不可なら失敗 |
+| `--test-only` | 実投入せず検証 |
 
-### 6.6 依存関係
+代表的依存種別:
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-d`, `--dependency=<spec>` | 他ジョブとの依存関係 | `sbatch -d afterok:12345 job.sh` |
-| `--kill-on-invalid-dep=<yes|no>` | 不正依存時の扱い | `sbatch --kill-on-invalid-dep=yes ...` |
+- `after:<jobid>`
+- `afterany:<jobid>`
+- `afterok:<jobid>`
+- `afternotok:<jobid>`
+- `singleton`
+- `aftercorr:<jobid>`
 
-代表的な依存種別:
+### 6.9 配列ジョブ
 
-- `after:<jobid>`: 対象ジョブが開始またはキャンセルされた後
-- `afterok:<jobid>`: 正常終了後
-- `afternotok:<jobid>`: 異常終了後
-- `afterany:<jobid>`: 終了状態を問わず終了後
-- `singleton`: 同名ジョブが同一ユーザーで同時実行されないようにする
+| オプション | 内容 |
+| --- | --- |
+| `-a`, `--array=<indexes>` | array job |
 
-例:
-
-```bash
-sbatch --dependency=afterok:12345 train.sh
-sbatch --dependency=afterany:12345,12346 collect.sh
-sbatch --dependency=singleton nightly.sh
-```
-
-### 6.7 配列ジョブ
-
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-a`, `--array=<spec>` | 配列ジョブを作る | `sbatch -a 0-99%8 job.sh` |
-
-書式:
+代表的書式:
 
 - `0-9`
 - `1,3,5`
-- `0-15:4`
+- `0-31:2`
 - `0-99%8`
-
-意味:
-
-- `%8`は同時実行数上限
-- 各要素は個別ジョブのように管理される
-- 親ジョブIDと配列インデックスは区別される
 
 関連環境変数:
 
@@ -292,181 +345,101 @@ sbatch --dependency=singleton nightly.sh
 - `SLURM_ARRAY_TASK_MIN`
 - `SLURM_ARRAY_TASK_MAX`
 
-例:
+### 6.10 入出力・作業ディレクトリ
 
-```bash
-#!/bin/bash
-#SBATCH --array=0-15%4
-#SBATCH --output=logs/%A_%a.out
-
-python run_case.py --index "$SLURM_ARRAY_TASK_ID"
-```
-
-### 6.8 標準出力・標準エラー・入力
-
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-o`, `--output=<pattern>` | 標準出力先 | `sbatch -o logs/%j.out job.sh` |
-| `-e`, `--error=<pattern>` | 標準エラー先 | `sbatch -e logs/%j.err job.sh` |
-| `-i`, `--input=<path>` | 標準入力元 | `sbatch -i input.txt job.sh` |
-| `--open-mode=append|truncate` | 既存ファイルへの追記/上書き | `sbatch --open-mode=append ...` |
-
-既定動作:
-
-- `--output`未指定時は通常`slurm-%j.out`
-- `--error`未指定時は標準出力と同じファイルにまとまることがある
-- 実際の既定動作はクラスタ設定やSlurm版に依存する場合がある
-
-ファイル名パターンでよく使う置換:
-
-| パターン | 意味 |
+| オプション | 内容 |
 | --- | --- |
-| `%j` | jobid |
-| `%J` | `jobid.stepid` |
-| `%A` | 配列ジョブの親jobid |
-| `%a` | 配列インデックス |
-| `%N` | 短いホスト名 |
-| `%n` | ジョブ内ノード番号 |
-| `%t` | タスク番号 |
-| `%u` | ユーザー名 |
-| `%x` | ジョブ名 |
-| `%%` | `%`そのもの |
+| `-o`, `--output=<pattern>` | 標準出力 |
+| `-e`, `--error=<pattern>` | 標準エラー |
+| `-i`, `--input=<path>` | 標準入力 |
+| `--open-mode=append|truncate` | 既存ファイルへの追記 / 上書き |
+| `-D`, `--chdir=<dir>` | 実行前にディレクトリ変更 |
+| `--wait-all-nodes=<0|1>` | 全ノード起動待ち制御 |
 
-例:
+### 6.11 環境・ユーザー・資格情報
 
-```bash
-sbatch -o logs/%x-%j.out -e logs/%x-%j.err job.sh
-sbatch --array=0-9 -o logs/%A_%a.out job.sh
-```
+| オプション | 内容 |
+| --- | --- |
+| `--export=<spec>` | 環境変数エクスポート制御 |
+| `--export-file=<file|fd>` | 環境変数ファイル |
+| `--get-user-env[=<timeout>]` | ログイン環境取得 |
+| `--uid=<uid>` | 実行 UID |
+| `--gid=<gid>` | 実行 GID |
+| `--propagate[=<rlimits>]` | resource limits 伝播 |
 
-### 6.9 作業ディレクトリ・環境変数・エクスポート
-
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-D`, `--chdir=<dir>` | 実行前に作業ディレクトリ変更 | `sbatch -D /work/proj job.sh` |
-| `--export=<spec>` | 環境変数の引き継ぎ制御 | `sbatch --export=ALL,FOO=bar job.sh` |
-| `--get-user-env` | ログイン環境を取得 | `sbatch --get-user-env job.sh` |
-| `--export-file=<file>` | ファイルから環境変数を読む | `sbatch --export-file=env.txt ...` |
-
-`--export`の代表例:
+代表例:
 
 - `--export=ALL`
 - `--export=NONE`
 - `--export=ALL,OMP_NUM_THREADS=8`
 - `--export=VAR1,VAR2`
 
-考え方:
+### 6.12 通知・可観測性・補助
 
-- `ALL`は送信元環境を基本的に引き継ぐ
-- `NONE`はほぼ引き継がない
-- 再現性を重視するなら`--export=NONE`や明示列挙を検討する
+| オプション | 内容 |
+| --- | --- |
+| `--mail-type=<types>` | メール通知タイミング |
+| `--mail-user=<addr>` | 通知先 |
+| `--acctg-freq=<datatype>=<interval>` | accounting frequency |
+| `--parsable` | parse 向け jobid 出力 |
+| `-W`, `--wait` | 終了まで待つ |
+| `--wrap=<command>` | 1 行コマンド投入 |
+| `-v`, `--verbose` | 詳細化 |
+| `--quiet` | 出力抑制 |
+| `--usage` | 簡易 usage |
+| `-V`, `--version` | version |
+| `--help` | help |
 
-### 6.10 ノード選択・除外・配置制約
+### 6.13 バーストバッファ・電力・コンテナ等の拡張機能
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `-w`, `--nodelist=<nodes>` | 使用ノード指定 | `sbatch -w node01 job.sh` |
-| `-x`, `--exclude=<nodes>` | 除外ノード指定 | `sbatch -x node03,node04 job.sh` |
-| `--constraint=<features>` | ノード機能制約 | `sbatch --constraint=gpu&ib job.sh` |
-| `--prefer=<features>` | 希望制約 | `sbatch --prefer=a100 job.sh` |
-| `--contiguous` | 連続ノード要求 | `sbatch --contiguous ...` |
-| `--distribution=<spec>` | タスク分布方式 | `sbatch --distribution=block ...` |
+公式 man page には、サイトが機能を有効化している場合に利用できる拡張オプションも含まれます。
 
-注意:
+| オプション | 内容 |
+| --- | --- |
+| `--bb=<spec>` | burst buffer 要求 |
+| `--bbf=<file>` | burst buffer spec file |
+| `--power=<flags>` | power management |
+| `--container=<bundle>` | OCI bundle |
+| `--container-id=<id>` | container id |
+| `--batch=<features>` | batch host 制約 |
+| `--reboot` | ノード reboot 許容 |
 
-- ノード名やfeature名はクラスタ依存
-- `--constraint`は論理式を扱える構成がある
+## 7. `sbatch`出力ファイル名パターン
 
-### 6.11 通知・再実行・シグナル
+`--output` / `--error` では置換パターンを使えます。よく使うものは次です。
 
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `--mail-type=<types>` | 通知タイミング | `sbatch --mail-type=END,FAIL ...` |
-| `--mail-user=<addr>` | 通知先メール | `sbatch --mail-user=user@example.com ...` |
-| `--requeue` | 再実行可能にする | `sbatch --requeue job.sh` |
-| `--no-requeue` | 再実行禁止 | `sbatch --no-requeue job.sh` |
-| `--signal=<spec>` | 終了前シグナル通知 | `sbatch --signal=B:USR1@60 job.sh` |
+| パターン | 意味 |
+| --- | --- |
+| `%j` | jobid |
+| `%J` | `jobid.stepid` |
+| `%A` | array 親 jobid |
+| `%a` | array task index |
+| `%N` | short hostname |
+| `%n` | ジョブ内ノード番号 |
+| `%t` | task 番号 |
+| `%u` | user 名 |
+| `%x` | job 名 |
+| `%%` | リテラル `%` |
 
-代表的な`--mail-type`:
-
-- `BEGIN`
-- `END`
-- `FAIL`
-- `REQUEUE`
-- `ALL`
-
-`--signal`の利用目的:
-
-- タイムリミット直前にチェックポイント保存する
-- 長時間学習ジョブの安全終了処理を入れる
-
-### 6.12 その他よく使う指定
-
-| オプション | 意味 | 例 |
-| --- | --- | --- |
-| `--parsable` | パースしやすい形式でjobid出力 | `jobid=$(sbatch --parsable job.sh)` |
-| `--wrap=<command>` | スクリプトなしで1行投入 | `sbatch --wrap="hostname"` |
-| `-W`, `--wait` | ジョブ終了まで待つ | `sbatch --wait job.sh` |
-| `--test-only` | 実投入せず検証中心で処理 | `sbatch --test-only job.sh` |
-| `--hold` | 保留状態で投入 | `sbatch --hold job.sh` |
-| `--profile=<types>` | プロファイリング設定 | `sbatch --profile=task ...` |
-| `--licenses=<spec>` | ライセンス資源要求 | `sbatch --licenses=matlab:1 ...` |
-
-## 7. `#SBATCH`でよく使うディレクティブ一覧
-
-`#SBATCH`では、ほぼそのままCLIオプションを記述します。
-
-例:
+代表例:
 
 ```bash
-#SBATCH --job-name=train
-#SBATCH -p gpu
-#SBATCH --gpus=1
-#SBATCH --mem=32G
-#SBATCH -t 04:00:00
-#SBATCH --array=0-15%4
-#SBATCH --dependency=afterok:12345
-#SBATCH -o logs/%j.out
-#SBATCH -e logs/%j.err
-#SBATCH --mail-type=END,FAIL
-#SBATCH --mail-user=user@example.com
+sbatch -o logs/%x-%j.out -e logs/%x-%j.err job.sh
+sbatch --array=0-31 -o logs/%A_%a.out job.sh
 ```
 
-ユーザーがよく使うディレクティブ群:
+## 8. `srun`の役割とオプション
 
-- `--job-name`
-- `--partition`
-- `--account`
-- `--qos`
-- `--nodes`
-- `--ntasks`
-- `--cpus-per-task`
-- `--mem`
-- `--mem-per-cpu`
-- `--gpus`
-- `--gres`
-- `--constraint`
-- `--time`
-- `--begin`
-- `--deadline`
-- `--dependency`
-- `--array`
-- `--output`
-- `--error`
-- `--chdir`
-- `--export`
-- `--mail-type`
-- `--mail-user`
-- `--exclusive`
-- `--requeue`
-- `--signal`
-
-## 8. `srun`の役割と主要オプション
-
-`srun`は二つの使い方があります。
+`srun` は二つの文脈で使われます。
 
 1. その場でジョブを起動する
-2. 既に確保済みのジョブ割り当て内でジョブステップを起動する
+2. 既存 allocation 内で job step を起動する
+
+基本形:
+
+```bash
+srun [options...] executable [args...]
+```
 
 例:
 
@@ -474,34 +447,52 @@ sbatch --array=0-9 -o logs/%A_%a.out job.sh
 srun -n 4 hostname
 salloc -N 1 -n 4
 srun ./app
+srun --pty bash
 ```
 
-よく使うオプションは`sbatch`とかなり共通です。
+`srun` は資源要求系の大半を `sbatch` / `salloc` と共有します。加えて、job step 起動コマンドとして次のオプションが特に重要です。
 
-| オプション | 意味 |
+| オプション | 内容 |
 | --- | --- |
-| `-n`, `--ntasks` | タスク数 |
-| `-c`, `--cpus-per-task` | タスクあたりCPU |
-| `-N`, `--nodes` | ノード数 |
-| `-p`, `--partition` | パーティション |
-| `--mem`, `--gpus`, `--gres` | 資源要求 |
-| `--pty` | 疑似端末を付けた対話実行 |
-| `--input`, `--output`, `--error` | I/O制御 |
-| `--cpu-bind`, `--mem-bind`, `--gpu-bind` | バインド制御 |
-| `--mpi=<type>` | MPI起動方式 |
-| `--exclusive`, `--overlap` | 資源共有制御 |
+| `--pty` | 疑似端末つき対話起動 |
+| `--mpi=<type>` | MPI 起動方式 |
+| `--cpu-bind=<type>` | CPU binding |
+| `--mem-bind=<type>` | memory binding |
+| `--gpu-bind=<type>` | GPU binding |
+| `--label` | 各行に task id ラベル付与 |
+| `-l`, `--label` | 同上 |
+| `-u`, `--unbuffered` | 標準出力 / エラーを行単位バッファなし |
+| `-K`, `--kill-on-bad-exit[=<0|1>]` | どれかの task が失敗したら残りも止める |
+| `--overlap` | 他 step と資源共有可 |
+| `--exact` | 正確な step 資源使用 |
+| `--relative=<n>` | allocation 内相対ノード指定 |
+| `--multi-prog` | 複数実行プログラム構成 |
+| `--bcast[=<dest_path>]` | 実行ファイル配布 |
+| `--send-libs[=<yes|no>]` | 依存ライブラリ転送 |
+| `--slurmd-debug=<level>` | `slurmd` 側 debug |
+| `--task-epilog=<file>` | task epilog |
+| `--task-prolog=<file>` | task prolog |
+| `--quit-on-interrupt` | SIGINT で即終了 |
+| `--preserve-env` | ローカル環境維持 |
+| `--resv-ports` | 通信ポート予約 |
+| `--wait=<sec>` | task 終了待ちの制御 |
 
-典型例:
+実務上の典型:
+
+- `srun --pty bash`
+- `srun -N 2 -n 32 --mpi=pmix ./mpi_app`
+- `srun -c 8 --cpu-bind=cores ./omp_app`
+- `srun --label -n 4 hostname`
+
+## 9. `salloc`の役割とオプション
+
+`salloc` は「資源だけを先に確保する」コマンドです。確保後、そのシェルまたは指定コマンドの中で `srun` を使います。
+
+基本形:
 
 ```bash
-srun --pty bash
-srun -N 2 -n 16 --mpi=pmix ./mpi_app
-srun --cpu-bind=cores ./omp_app
+salloc [options...] [command [args...]]
 ```
-
-## 9. `salloc`の役割
-
-`salloc`は、対話作業用に資源だけを先に確保するコマンドです。確保後、そのシェルや子プロセスで`srun`を使って作業します。
 
 例:
 
@@ -510,19 +501,29 @@ salloc -N 1 -n 4 -t 01:00:00
 srun --pty bash
 ```
 
+`salloc` は資源要求オプションの多くを `sbatch` と共有し、対話用途向けに次がよく使われます。
+
+| オプション | 内容 |
+| --- | --- |
+| `--no-shell` | shell を起動しない |
+| `--bell` | 割り当て成立時にベル |
+| `--immediate[=<seconds>]` | 即時に確保できなければ失敗 |
+| `--label` | 出力ラベル |
+
 用途:
 
-- 対話的なデバッグ
-- ノード上での短時間検証
-- Jupyterやシェルベース作業の前段
+- 対話デバッグ
+- Jupyter など長寿命プロセス前段
+- ノード上での手動検証
+- 複数回 `srun` を投げるセッション
 
-主要オプションは`sbatch`/`srun`とほぼ同系統です。
+## 10. キュー監視系コマンド
 
-## 10. `squeue`での状態確認
+### 10.1 `squeue`
 
-`squeue`は現在キューに存在するジョブを見るコマンドです。待機中・実行中の確認に向きます。
+`squeue` は現在キューに存在するジョブを表示します。待機中・実行中の確認に使います。
 
-典型例:
+基本例:
 
 ```bash
 squeue
@@ -532,63 +533,84 @@ squeue --states=PENDING,RUNNING
 squeue --format="%.18i %.9P %.20j %.8u %.2t %.10M %.6D %R"
 ```
 
-よく使うオプション:
+主要オプション:
 
-| オプション | 意味 |
+| オプション | 内容 |
 | --- | --- |
-| `-u`, `--user=<name>` | ユーザーで絞る |
-| `-j`, `--jobs=<ids>` | jobidで絞る |
-| `-p`, `--partition=<name>` | パーティションで絞る |
-| `-t`, `--states=<states>` | 状態で絞る |
-| `-o`, `--format=<fmt>` | 出力フォーマット指定 |
-| `-l`, `--long` | 長い形式 |
-| `-r`, `--array` | 配列ジョブ要素を展開表示 |
+| `-a`, `--all` | すべて表示 |
+| `-r`, `--array` | 配列要素を展開 |
 | `-h`, `--noheader` | ヘッダ非表示 |
-| `-S`, `--sort=<spec>` | ソート指定 |
+| `-j`, `--jobs=<ids>` | jobid 指定 |
+| `-u`, `--user=<users>` | user 指定 |
+| `-p`, `--partition=<parts>` | partition 指定 |
+| `-t`, `--states=<states>` | state 指定 |
+| `-n`, `--name=<names>` | job name 指定 |
+| `-w`, `--nodelist=<nodes>` | node 指定 |
+| `-o`, `--format=<fmt>` | format 指定 |
+| `-O`, `--Format=<fmt>` | long field names を使う format |
+| `-l`, `--long` | long format |
+| `-s`, `--steps` | steps 表示 |
+| `-S`, `--sort=<spec>` | sort 指定 |
+| `--start` | 推定開始時刻つき表示 |
+| `--me` | 現ユーザーに限定 |
+| `-M`, `--clusters=<names>` | 複数クラスタ |
+| `--yaml`, `--json` | machine readable 出力 |
 
-`NODELIST(REASON)`列は重要です。
+`NODELIST(REASON)` は重要です。
 
-- 実行中ならノード名が見える
-- 待機中なら理由が出る
-- 代表例: `Resources`, `Priority`, `Dependency`, `ReqNodeNotAvail`
+- 実行中ならノード一覧
+- 待機中なら理由
+- 代表的理由は `Priority`, `Resources`, `Dependency`, `ReqNodeNotAvail`
 
-## 11. `scancel`での停止・シグナル送信
+### 10.2 `sprio`
 
-`scancel`はジョブ停止やシグナル送信に使います。
+`sprio` はジョブ優先度の内訳を表示します。
 
-例:
+主な用途:
 
-```bash
-scancel 12345
-scancel 12345_7
-scancel --signal=TERM 12345
-scancel --user="$USER" --state=PENDING
-```
+- なぜ待っているかを優先度面から見る
+- age / fairshare / job size / QOS などの構成要素を見る
 
-よく使うオプション:
+代表的オプション:
 
-| オプション | 意味 |
+| オプション | 内容 |
 | --- | --- |
-| `--signal=<sig>` | 任意シグナル送信 |
-| `-u`, `--user=<name>` | ユーザーで絞る |
-| `-p`, `--partition=<name>` | パーティションで絞る |
-| `-t`, `--state=<states>` | 状態で絞る |
-| `-n`, `--name=<jobname>` | ジョブ名で絞る |
-| `-w`, `--nodelist=<nodes>` | ノードで絞る |
-| `-f`, `--full` | バッチステップも含める |
-| `-b`, `--batch` | バッチステップのみに送る |
+| `-j`, `--jobs=<ids>` | jobid 指定 |
+| `-u`, `--users=<users>` | user 指定 |
+| `-o`, `--format=<fmt>` | format 指定 |
+| `-l`, `--long` | 詳細表示 |
+| `-M`, `--clusters=<names>` | 複数クラスタ |
+| `-n`, `--noheader` | ヘッダなし |
 
-注意:
+### 10.3 `sshare`
 
-- `jobid_arrayindex`形式で配列ジョブ要素個別指定が可能
-- フィルタ条件は組み合わせて使える
-- 誤爆防止のため、まず`squeue`で対象確認してから使うべき
+`sshare` は association / fairshare 情報を表示します。
 
-## 12. `sacct`での履歴・終了結果確認
+主な用途:
 
-`sacct`は完了済みも含めた履歴確認向けです。失敗解析では必須です。
+- 自分の fairshare や usage の確認
+- account / user association の share 確認
 
-例:
+代表的オプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `-A`, `--accounts=<accounts>` | account 指定 |
+| `-u`, `--users=<users>` | user 指定 |
+| `-a`, `--all` | すべて表示 |
+| `-l`, `--long` | 長い形式 |
+| `-o`, `--format=<fmt>` | format 指定 |
+| `-n`, `--noheader` | ヘッダなし |
+| `-P`, `--parsable2` | parse 向け |
+| `-M`, `--clusters=<names>` | 複数クラスタ |
+
+## 11. 会計・統計コマンド
+
+### 11.1 `sacct`
+
+`sacct` は終了済みを含むジョブ履歴を表示します。ジョブ会計 DB または accounting log に依存します。
+
+基本例:
 
 ```bash
 sacct -j 12345
@@ -597,136 +619,365 @@ sacct -s FAILED,TIMEOUT
 sacct -S 2026-04-01 -E 2026-04-11
 ```
 
-よく使うオプション:
+主要オプション:
 
-| オプション | 意味 |
+| オプション | 内容 |
 | --- | --- |
-| `-j`, `--jobs=<ids>` | jobid指定 |
-| `-s`, `--state=<states>` | 状態で絞る |
+| `-A`, `--accounts=<accounts>` | account 指定 |
+| `--array` | array task を展開 |
+| `-L`, `--allclusters` | 全クラスタ |
+| `-X`, `--allocations` | allocation 単位のみ |
+| `-a`, `--allusers` | 全ユーザー |
+| `-j`, `--jobs=<ids>` | jobid 指定 |
+| `-s`, `--state=<states>` | state 指定 |
 | `-S`, `--starttime=<time>` | 開始時刻下限 |
 | `-E`, `--endtime=<time>` | 終了時刻上限 |
-| `-o`, `--format=<fields>` | 表示列指定 |
-| `-X`, `--allocations` | ステップを省いて割り当て単位表示 |
-| `-p`, `--parsable2` | パース向け区切り出力 |
-| `-n`, `--noheader` | ヘッダ非表示 |
+| `-o`, `--format=<fields>` | 出力列 |
+| `-n`, `--noheader` | ヘッダなし |
+| `-p`, `-P` | parse 向け出力 |
+| `-u`, `--user=<users>` | user 指定 |
+| `-M`, `--clusters=<names>` | cluster 指定 |
+| `-b`, `--brief` | 簡潔表示 |
+| `-D`, `--duplicates` | 重複 jobid 表示 |
+| `-e`, `--helpformat` | 利用可能 field 一覧 |
+| `-k`, `--timelimit-min=<time>` | minimum timelimit |
+| `-K`, `--timelimit-max=<time>` | maximum timelimit |
+| `-q`, `--qos=<qos_list>` | qos 指定 |
+| `-r`, `--partition=<parts>` | partition 指定 |
+| `-T`, `--truncate` | 時刻範囲で集計を切る |
 
 よく見る列:
 
 - `JobID`
 - `JobName`
 - `Partition`
+- `Account`
+- `AllocCPUS`
 - `State`
 - `ExitCode`
 - `Elapsed`
 - `ReqMem`
 - `MaxRSS`
-- `AllocCPUS`
 - `NodeList`
 
-注意:
+### 11.2 `sstat`
 
-- `squeue`は現在の状態確認
-- `sacct`は終了後の事後解析
-- `--state`だけ指定した場合、時間窓の既定値に注意が必要
+`sstat` は実行中ジョブ / step の統計を表示します。`jobacct_gather` が必要です。
 
-## 13. `sinfo`でのクラスタ状態確認
+基本例:
 
-`sinfo`はパーティションとノードの状態を見るコマンドです。
+```bash
+sstat -j 12345.batch
+sstat -j 12345.0 --format=JobID,AveCPU,MaxRSS,MaxVMSize
+```
 
-例:
+主要オプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `-a`, `--allsteps` | step をまとめて表示 |
+| `-j`, `--jobs=<job.step>` | job/step 指定 |
+| `-o`, `--format`, `--fields` | 表示 field |
+| `--helpformat` | 利用可能 field 一覧 |
+| `-i`, `--pidformat` | pid field 指定 |
+| `-n`, `--noheader` | ヘッダなし |
+| `-p`, `--parsable` | parse 向け |
+| `-P`, `--parsable2` | parse 向け |
+| `--usage` | usage |
+| `-V`, `--version` | version |
+
+## 12. ノード・パーティション確認
+
+### `sinfo`
+
+`sinfo` はパーティションとノードの状態を見るコマンドです。
+
+基本例:
 
 ```bash
 sinfo
 sinfo -p gpu
-sinfo --long
 sinfo -N
+sinfo --long
 sinfo -o "%20P %10a %10l %6D %10T %N"
 ```
 
-よく使うオプション:
+主要オプション:
 
-| オプション | 意味 |
+| オプション | 内容 |
 | --- | --- |
-| `-p`, `--partition=<name>` | パーティション絞り込み |
-| `-N`, `--Node` | ノード単位で表示 |
-| `-l`, `--long` | 詳細表示 |
-| `-o`, `--format=<fmt>` | 出力フォーマット指定 |
-| `-t`, `--states=<states>` | ノード状態絞り込み |
-| `-h`, `--noheader` | ヘッダ非表示 |
+| `-a`, `--all` | hidden partition も含める |
+| `-N`, `--Node` | node 単位表示 |
+| `-p`, `--partition=<parts>` | partition 指定 |
+| `-n`, `--nodes=<nodes>` | nodes 指定 |
+| `-t`, `--states=<states>` | node state 指定 |
 | `-r`, `--responding` | 応答ノードのみ |
+| `-d`, `--dead` | 応答なしノードのみ |
+| `-e`, `--exact` | まとめず正確表示 |
+| `-h`, `--noheader` | ヘッダなし |
+| `-l`, `--long` | long format |
+| `-o`, `--format=<fmt>` | format |
+| `-O`, `--Format=<fmt>` | long field names format |
+| `-R`, `--list-reasons` | drain/down 理由一覧 |
+| `-s`, `--summarize` | サマリ形式 |
+| `-S`, `--sort=<spec>` | sort |
+| `-M`, `--clusters=<names>` | cluster 指定 |
+| `--yaml`, `--json` | machine readable 出力 |
 
-見たい情報:
+## 13. 制御・取消・詳細参照
 
-- パーティション名
-- 利用可否
-- タイムリミット
-- ノード数
-- ノード状態
-- GRES/GPU関連情報
+### 13.1 `scancel`
 
-## 14. ジョブ状態コード
+`scancel` はジョブや job step にシグナルを送るコマンドです。
 
-よく見る状態:
+基本例:
+
+```bash
+scancel 12345
+scancel 12345_7
+scancel --signal=TERM 12345
+scancel --user="$USER" --state=PENDING
+```
+
+主要オプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `-A`, `--account=<accounts>` | account 指定 |
+| `-b`, `--batch` | batch step のみに送る |
+| `-f`, `--full` | batch step と子 step にも送る |
+| `-i`, `--interactive` | 確認付き |
+| `-n`, `--name=<names>` | job name 指定 |
+| `-p`, `--partition=<parts>` | partition 指定 |
+| `-q`, `--qos=<qos>` | qos 指定 |
+| `-R`, `--reservation=<name>` | reservation 指定 |
+| `-s`, `--signal=<sig>` | シグナル指定 |
+| `-t`, `--state=<states>` | state 指定 |
+| `-u`, `--user=<users>` | user 指定 |
+| `-w`, `--nodelist=<nodes>` | node 指定 |
+| `-M`, `--clusters=<names>` | cluster 指定 |
+| `--ctld` | `slurmctld` 経由で処理 |
+| `--sibling=<cluster>` | federated sibling 指定 |
+| `--quiet` | quiet |
+| `--verbose` | verbose |
+
+注意:
+
+- array task は `jobid_taskid` 形式で個別指定できる
+- 条件付き cancel は誤爆防止のため `squeue` と併用すべき
+- `--signal` を使えば kill だけでなく checkpoint 通知にも使える
+
+### 13.2 `scontrol`
+
+`scontrol` は汎用の表示 / 管理コマンドです。一般ユーザー視点では「詳細確認」が主用途です。
+
+よく使う表示系:
+
+```bash
+scontrol show job 12345
+scontrol show node node01
+scontrol show partition gpu
+scontrol show hostnames "$SLURM_JOB_NODELIST"
+```
+
+一般ユーザーがよく使うサブコマンド:
+
+| サブコマンド | 用途 |
+| --- | --- |
+| `show job <jobid>` | ジョブ詳細 |
+| `show node <name>` | ノード詳細 |
+| `show partition <name>` | パーティション詳細 |
+| `show hostnames <nodelist>` | nodelist 展開 |
+| `hold <jobid>` | ユーザー保留 |
+| `release <jobid>` | 保留解除 |
+| `requeue <jobid>` | 再キュー |
+| `update JobId=<id> ...` | 一部属性変更 |
+| `notify <jobid> <msg>` | 通知 |
+| `pidinfo <pid>` | PID 対応確認 |
+
+主要グローバルオプション:
+
+- `-a`, `--all`
+- `-d`, `--details`
+- `-o`, `--oneliner`
+- `-M`, `--clusters=<names>`
+- `--json`
+- `--yaml`
+
+### 13.3 `sattach`
+
+`sattach` は実行中 step の stdout / stderr へ接続するコマンドです。
+
+基本形:
+
+```bash
+sattach [options] <jobid.stepid>
+```
+
+主なオプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `--input-filter=<taskid>` | stdin 対象 task |
+| `--output-filter=<taskid>` | stdout 対象 task |
+| `--error-filter=<taskid>` | stderr 対象 task |
+| `-l`, `--label` | 出力ラベル |
+| `--layout` | task layout 表示 |
+| `--pty` | pty モード |
+| `-Q`, `--quiet` | quiet |
+| `-v`, `--verbose` | verbose |
+
+### 13.4 `sbcast`
+
+`sbcast` は allocation ノード群へファイルを配布します。
+
+基本形:
+
+```bash
+sbcast [options] source dest
+```
+
+主なオプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `-C`, `--compress[=<library>]` | 圧縮転送 |
+| `-f`, `--force` | 上書き |
+| `-F`, `--fanout=<n>` | fanout |
+| `-j`, `--jobid=<jobid>` | job 指定 |
+| `-p`, `--preserve` | 権限 / 時刻保持 |
+| `-s`, `--size=<size>` | block size |
+| `-t`, `--timeout=<sec>` | timeout |
+| `-v`, `--verbose` | verbose |
+
+## 14. 定期実行・補助・分析系
+
+### 14.1 `scrontab`
+
+`scrontab` は Slurm 版 crontab を管理します。エントリごとに `#SCRON` ディレクティブを使い、`sbatch` の多くのオプションを引き継げます。
+
+主なサブコマンド:
+
+| コマンド | 用途 |
+| --- | --- |
+| `scrontab -e` | 編集 |
+| `scrontab -l` | 一覧 |
+| `scrontab -r` | 削除 |
+| `scrontab <file>` | file から読み込み |
+
+主なオプション:
+
+| オプション | 内容 |
+| --- | --- |
+| `-e` | 編集 |
+| `-l` | 一覧 |
+| `-r` | 削除 |
+| `-i` | 削除確認 |
+| `-u <user>` | user 指定 |
+
+`#SCRON` について:
+
+- 直後の 1 エントリにだけ適用される
+- エントリ間でオプションはリセットされる
+- 利用できる資源指定の多くは `sbatch` と同系統
+
+### 14.2 `sreport`
+
+`sreport` は会計 DB からレポートを作るコマンドです。一般利用者は制限されることがあります。
+
+### 14.3 `sacctmgr`
+
+`sacctmgr` は account / user / association 管理用で、通常は管理者向けです。
+
+### 14.4 `sdiag`, `strigger`, `sh5util`, `scrun`, `sview`
+
+- `sdiag`: scheduler 診断
+- `strigger`: trigger 管理
+- `sh5util`: profiling 補助
+- `scrun`: OCI runtime proxy
+- `sview`: GUI
+
+これらは存在を知っておく程度で十分なケースが多いです。
+
+## 15. ジョブ状態コード
+
+公式の主な状態:
 
 | 状態 | 意味 |
 | --- | --- |
 | `PENDING` | 待機中 |
 | `RUNNING` | 実行中 |
-| `COMPLETED` | 正常終了 |
-| `FAILED` | 異常終了 |
-| `CANCELLED` | キャンセルされた |
-| `TIMEOUT` | 制限時間超過 |
-| `OUT_OF_MEMORY` | メモリ不足 |
-| `NODE_FAIL` | ノード障害 |
-| `PREEMPTED` | プリエンプトされた |
 | `SUSPENDED` | 一時停止 |
 | `COMPLETING` | 終了処理中 |
-| `CONFIGURING` | 構成中 |
+| `COMPLETED` | 正常終了 |
+| `CANCELLED` | キャンセル |
+| `FAILED` | 異常終了 |
+| `TIMEOUT` | time limit 超過 |
+| `OUT_OF_MEMORY` | OOM |
+| `NODE_FAIL` | ノード障害 |
+| `PREEMPTED` | preemption |
+| `BOOT_FAIL` | boot 失敗 |
+| `DEADLINE` | deadline miss |
 
-`squeue`では略号で出ることがあります。
+`squeue` でよく見る略号:
 
 | 略号 | 状態 |
 | --- | --- |
 | `PD` | `PENDING` |
 | `R` | `RUNNING` |
+| `S` | `SUSPENDED` |
 | `CG` | `COMPLETING` |
 | `CD` | `COMPLETED` |
 | `CA` | `CANCELLED` |
 | `F` | `FAILED` |
 | `TO` | `TIMEOUT` |
 | `OOM` | `OUT_OF_MEMORY` |
+| `NF` | `NODE_FAIL` |
+| `PR` | `PREEMPTED` |
+| `BF` | `BOOT_FAIL` |
+| `DL` | `DEADLINE` |
 
-## 15. Slurmが設定する主な環境変数
+## 16. Slurm が設定する主要環境変数
 
-ジョブ内でよく参照する変数:
+コマンドや文脈により差はありますが、ジョブ / allocation / step で特に重要なのは次です。
 
 | 変数 | 意味 |
 | --- | --- |
 | `SLURM_JOB_ID` | jobid |
-| `SLURM_JOB_NAME` | ジョブ名 |
+| `SLURM_JOB_NAME` | job 名 |
 | `SLURM_JOB_NODELIST` | 割り当てノード一覧 |
 | `SLURM_NNODES` | ノード数 |
 | `SLURM_NTASKS` | タスク数 |
-| `SLURM_CPUS_PER_TASK` | タスクあたりCPU数 |
-| `SLURM_SUBMIT_DIR` | 投入時カレントディレクトリ |
+| `SLURM_CPUS_PER_TASK` | task あたり CPU |
+| `SLURM_CPUS_PER_GPU` | GPU あたり CPU |
+| `SLURM_MEM_PER_CPU` | CPU あたりメモリ |
+| `SLURM_MEM_PER_NODE` | ノードあたりメモリ |
+| `SLURM_MEM_PER_GPU` | GPU あたりメモリ |
+| `SLURM_GPUS` | GPU 数 |
+| `SLURM_GPUS_PER_NODE` | ノードあたり GPU |
+| `SLURM_GPUS_PER_TASK` | task あたり GPU |
+| `SLURM_SUBMIT_DIR` | 投入時ディレクトリ |
 | `SLURM_SUBMIT_HOST` | 投入元ホスト |
-| `SLURM_ARRAY_JOB_ID` | 配列親jobid |
-| `SLURM_ARRAY_TASK_ID` | 配列インデックス |
-| `SLURM_PROCID` | タスクの相対番号 |
-| `SLURM_LOCALID` | ノード内ローカルタスク番号 |
-| `SLURM_NODEID` | ジョブ内ノード番号 |
+| `SLURM_ARRAY_JOB_ID` | array 親 jobid |
+| `SLURM_ARRAY_TASK_ID` | array index |
+| `SLURM_ARRAY_TASK_COUNT` | array 要素数 |
+| `SLURM_ARRAY_TASK_MIN` | 最小 index |
+| `SLURM_ARRAY_TASK_MAX` | 最大 index |
+| `SLURM_PROCID` | job step 内 rank |
+| `SLURM_LOCALID` | node 内 local rank |
+| `SLURM_NODEID` | allocation 内 node index |
+| `SLURM_STEP_ID` | step id |
+| `SLURM_STEP_NUM_TASKS` | step task 数 |
+| `SLURM_CLUSTER_NAME` | cluster 名 |
+| `SLURM_DISTRIBUTION` | 指定 distribution |
+| `SLURM_GPU_BIND` | GPU bind 指定 |
+| `SLURM_CPU_FREQ_REQ` | CPU frequency 要求 |
+| `SLURM_CONTAINER` | OCI bundle |
+| `SLURM_CONTAINER_ID` | OCI container id |
 
-例:
+## 17. 典型的なジョブスクリプト例
 
-```bash
-echo "$SLURM_JOB_ID"
-echo "$SLURM_ARRAY_TASK_ID"
-echo "$SLURM_CPUS_PER_TASK"
-```
-
-## 16. 典型的なジョブスクリプト例
-
-### CPU並列
+### CPU 並列
 
 ```bash
 #!/bin/bash
@@ -791,15 +1042,25 @@ jid2=$(sbatch --parsable --dependency=afterok:"$jid1" train.sh)
 sbatch --dependency=afterok:"$jid2" evaluate.sh
 ```
 
-## 17. 実務上の注意点
+## 18. 実務で特に重要な整理
 
-- `sbatch`は投入コマンドであり、その場で処理が走るとは限らない
-- `#SBATCH`はスクリプト冒頭にまとめるべき
-- `--ntasks`と`--cpus-per-task`は役割が違う
-- ログは`--output`と`--error`を明示した方が追跡しやすい
-- 失敗解析では`squeue`だけでなく`sacct`を見る
-- `--mem`か`--mem-per-cpu`かは運用ルールに合わせる
-- `account`、`qos`、`partition`、`constraint`、GPU表記はクラスタ依存
-- 公式オプションがクラスタで禁止されている場合もある
-- 詳細確認には`scontrol show job <jobid>`が有効
-- 実際の運用はサイトローカルルールが最終的に支配する
+- `sbatch` は「投入」であって「即実行」ではない
+- `salloc` は allocation、`srun` は step 起動、`sbatch` は batch job
+- `#SBATCH` はスクリプト冒頭コメント領域でのみ有効
+- 優先順位は `CLI > 環境変数 > #SBATCH`
+- `--ntasks` と `--cpus-per-task` は全く別物
+- 実行中は `squeue` / `sstat`、終了後は `sacct`
+- 詳細確認は `scontrol show job <jobid>`
+- 待ち理由の解析は `squeue` の reason と `sprio` の両方を見る
+- fairshare が効くクラスタでは `sshare` が効く
+- 公式オプションが存在してもサイト設定により使用不可のことがある
+
+## 19. 公式参照先の使い分け
+
+- バッチ投入仕様: [`sbatch`](https://slurm.schedmd.com/sbatch.html)
+- 対話 / step 実行: [`srun`](https://slurm.schedmd.com/srun.html), [`salloc`](https://slurm.schedmd.com/salloc.html)
+- 現在状態: [`squeue`](https://slurm.schedmd.com/squeue.html), [`sinfo`](https://slurm.schedmd.com/sinfo.html)
+- 終了後解析: [`sacct`](https://slurm.schedmd.com/sacct.html), [`sstat`](https://slurm.schedmd.com/sstat.html)
+- 制御 / 詳細: [`scancel`](https://slurm.schedmd.com/scancel.html), [`scontrol`](https://slurm.schedmd.com/scontrol.html)
+- 優先度 / fairshare: [`sprio`](https://slurm.schedmd.com/sprio.html), [`sshare`](https://slurm.schedmd.com/sshare.html)
+- 補助: [`sattach`](https://slurm.schedmd.com/sattach.html), [`sbcast`](https://slurm.schedmd.com/sbcast.html), [`scrontab`](https://slurm.schedmd.com/scrontab.html)
