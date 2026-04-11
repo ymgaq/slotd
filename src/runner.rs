@@ -84,7 +84,7 @@ impl Runner {
         let child = command.spawn()?;
         let pid = child.id() as i32;
         let pgid = pid;
-        let cgroup_path = setup_job_cgroup(store.config(), job, pid).ok().flatten();
+        let cgroup_path = setup_job_cgroup(store.config(), job, pid)?;
         store.mark_running(job.id, pid, pgid, &assigned_gpu_ids)?;
 
         self.jobs.insert(

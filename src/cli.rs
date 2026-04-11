@@ -150,6 +150,8 @@ pub struct SrunArgs {
     chdir: Option<PathBuf>,
     #[arg(long)]
     immediate: bool,
+    #[arg(long)]
+    pty: bool,
     #[arg(long, hide = true)]
     no_wait: bool,
     #[arg(required = true, num_args = 1.., trailing_var_arg = true, allow_hyphen_values = true)]
@@ -335,6 +337,10 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
 }
 
 fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
+    if let Some(job) = current_allocation_job(&config)? {
+        return run_foreground_step(&config, &job, &args.command);
+    }
+
     let cwd = args
         .chdir
         .as_ref()
@@ -366,6 +372,25 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         .map(parse_time_limit_secs)
         .transpose()?;
     let command_override = shell_join(&args.command);
+
+    if !args.no_wait && (args.pty || (args.output.is_none() && args.error.is_none())) {
+        return run_interactive_srun(
+            &config,
+            InteractiveRunSpec {
+                name: args.job_name.or_else(|| Some(command_name)),
+                partition,
+                cwd,
+                requested_cpus,
+                requested_tasks,
+                requested_memory_mb,
+                requested_gpus,
+                time_limit_secs,
+                immediate: args.immediate,
+                command: args.command,
+            },
+        );
+    }
+
     let script_body = format!("#!/usr/bin/env bash\nexec {}\n", command_override);
 
     let request = SubmitRequest {
@@ -802,6 +827,60 @@ fn replay_srun_output(job: &JobRecord, replay_stdout: bool, replay_stderr: bool)
     Ok(())
 }
 
+struct InteractiveRunSpec {
+    name: Option<String>,
+    partition: String,
+    cwd: String,
+    requested_cpus: u32,
+    requested_tasks: u32,
+    requested_memory_mb: u64,
+    requested_gpus: u32,
+    time_limit_secs: Option<u64>,
+    immediate: bool,
+    command: Vec<String>,
+}
+
+fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<()> {
+    let request = SubmitRequest {
+        name: spec.name.or_else(|| Some("srun".to_string())),
+        user_name: current_user_name(),
+        partition: spec.partition,
+        cwd: spec.cwd,
+        script_name: "srun".to_string(),
+        script_body: String::new(),
+        command_override: Some(shell_join(&spec.command)),
+        requested_cpus: spec.requested_cpus,
+        requested_tasks: spec.requested_tasks,
+        requested_memory_mb: spec.requested_memory_mb,
+        requested_gpus: spec.requested_gpus,
+        allocation_only: true,
+        dependency: None,
+        array_spec: None,
+        time_limit_secs: spec.time_limit_secs,
+        stdout_path: None,
+        stderr_path: None,
+    };
+
+    let job_id = match send_request(
+        config,
+        &Request::SubmitAlloc {
+            request,
+            immediate: spec.immediate,
+        },
+    )? {
+        Response::Submitted { job_id } => job_id,
+        Response::Error { message } => return Err(SlotdError::from(message)),
+        other => {
+            return Err(SlotdError::from(format!(
+                "unexpected response to interactive srun: {other:?}"
+            )));
+        }
+    };
+
+    let job = wait_for_job_running(config, job_id)?;
+    run_foreground_allocation(config, &job, &spec.command)
+}
+
 fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     command.env("SLURM_JOB_ID", job.id.to_string());
     command.env("SLURM_JOB_NAME", &job.name);
@@ -815,6 +894,46 @@ fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     }
     if let Some(array_task_id) = job.array_task_id {
         command.env("SLURM_ARRAY_TASK_ID", array_task_id.to_string());
+    }
+    command.env("SLURM_STEP_ID", "0");
+}
+
+fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
+    let Ok(value) = std::env::var("SLURM_JOB_ID") else {
+        return Ok(None);
+    };
+    let Ok(job_id) = value.parse::<i64>() else {
+        return Ok(None);
+    };
+
+    match send_request(config, &Request::GetJob { job_id })? {
+        Response::Job { job: Some(job) }
+            if job.state == JobState::Running && job.allocation_only =>
+        {
+            Ok(Some(job))
+        }
+        Response::Job { .. } => Ok(None),
+        Response::Error { message } => Err(SlotdError::from(message)),
+        other => Err(SlotdError::from(format!(
+            "unexpected response while loading current allocation: {other:?}"
+        ))),
+    }
+}
+
+fn run_foreground_step(config: &AppConfig, job: &JobRecord, command: &[String]) -> Result<()> {
+    let mut child = Command::new(&command[0]);
+    child.args(&command[1..]);
+    child.current_dir(&job.cwd);
+    child.stdin(Stdio::inherit());
+    child.stdout(Stdio::inherit());
+    child.stderr(Stdio::inherit());
+    apply_slurm_env(&mut child, config, job);
+
+    let status = child.spawn()?.wait()?;
+    match status.code() {
+        Some(0) => Ok(()),
+        Some(code) => Err(SlotdError::Exit(code)),
+        None => Err(SlotdError::Exit(1)),
     }
 }
 
@@ -844,6 +963,8 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord) {
         (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
         _ => "(null)".to_string(),
     };
+    let req_tres = format_job_req_tres(job);
+    let alloc_tres = format_job_alloc_tres(config, job);
     println!(
         "JobId={} JobName={} UserId={}({}) Partition={} State={} Reason={}",
         job.id,
@@ -864,16 +985,25 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord) {
         dependency
     );
     println!(
-        "   SubmitTime={} StartTime={} EndTime={} ExitCode={} ArrayTask={}",
+        "   SubmitTime={} StartTime={} EndTime={} ExitCode={} ArrayTask={} BatchFlag={}",
         format_timestamp(job.submit_time),
         format_optional_timestamp(job.start_time),
         format_optional_timestamp(job.end_time),
         format_exit_status(job),
-        array
+        array,
+        if job.allocation_only { 0 } else { 1 }
     );
     println!(
         "   WorkDir={} Command={} StdOut={} StdErr={} NodeList={}",
         job.cwd, job.command, stdout, stderr, node_list
+    );
+    println!(
+        "   ReqTRES={} AllocTRES={} MaxRSS={}",
+        req_tres,
+        alloc_tres,
+        job.max_rss_kb
+            .map(|value| format!("{value}K"))
+            .unwrap_or_else(|| "(null)".to_string())
     );
 }
 
@@ -1132,6 +1262,37 @@ fn format_duration_secs(seconds: i64) -> String {
     } else {
         format!("{hours:02}:{minutes:02}:{secs:02}")
     }
+}
+
+fn format_job_req_tres(job: &JobRecord) -> String {
+    let mut values = vec![
+        format!(
+            "cpu={}",
+            job.requested_cpus.saturating_mul(job.requested_tasks)
+        ),
+        format!("mem={}M", job.requested_memory_mb),
+    ];
+    if job.requested_gpus > 0 {
+        values.push(format!("gres/gpu={}", job.requested_gpus));
+    }
+    values.join(",")
+}
+
+fn format_job_alloc_tres(config: &AppConfig, job: &JobRecord) -> String {
+    let mut values = vec![
+        format!(
+            "cpu={}",
+            job.requested_cpus.saturating_mul(job.requested_tasks)
+        ),
+        format!("mem={}M", job.requested_memory_mb),
+    ];
+    if job.state != JobState::Pending {
+        values.push("node=1".to_string());
+    }
+    if config.is_gpu_partition(&job.partition) && job.requested_gpus > 0 {
+        values.push(format!("gres/gpu={}", job.requested_gpus));
+    }
+    values.join(",")
 }
 
 #[cfg(test)]

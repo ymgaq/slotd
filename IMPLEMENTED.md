@@ -258,12 +258,11 @@ Not implemented yet:
 `srun` currently works as follows:
 
 - accepts a direct command after `--`
-- builds a small shell script wrapper internally
-- submits the command as a scheduler-managed job
-- records the command string in the job table for display in `squeue`
-- waits for job completion by default
-- returns the job exit code through the `slotd` process exit code
-- replays captured output to the caller after completion when default log paths are used
+- when stdout and stderr are not redirected, acquires an allocation and runs the command in the foreground with inherited stdio
+- supports `--pty` as a foreground interactive mode on top of the same allocation path
+- when `SLURM_JOB_ID` points at a running allocation-only job, runs as a local step inside that allocation instead of submitting a new job
+- falls back to daemon-launched batch-style execution when output files are requested or `--no-wait` is used
+- returns the command exit code through the `slotd` process exit code
 
 Supported options:
 
@@ -278,17 +277,17 @@ Supported options:
 - `-e`, `--error`
 - `-D`, `--chdir`
 - `--immediate`
+- `--pty`
 
 Current `--immediate` behavior:
 
-- if enough resources are available right now, the command job is accepted
+- if enough resources are available right now, the allocation or command job is accepted
 - if enough resources are not available, submission fails immediately
 
 Not implemented yet:
 
-- interactive real-time stdio streaming
-- `--pty`
-- task and step semantics comparable to full Slurm `srun`
+- daemon-tracked multi-step accounting inside one allocation
+- separate step IDs beyond `SLURM_STEP_ID=0`
 
 ## Allocation Submission
 
@@ -335,7 +334,9 @@ Implemented behavior:
 - the daemon enforces configured time limits and terminates overdue jobs
 - basic Slurm-style environment variables are exported for daemon-launched jobs
 - array jobs export `SLURM_ARRAY_JOB_ID` and `SLURM_ARRAY_TASK_ID`
-- when `SLOTD_CGROUP_BASE` points at a writable cgroup v2 subtree, the daemon attempts to set `memory.max`, `cpu.max`, and join the child process to that cgroup
+- foreground allocation-backed `srun` and `salloc` also export `SLURM_STEP_ID`
+- when `SLOTD_CGROUP_BASE` points at a writable cgroup v2 subtree, the daemon configures `memory.max`, `cpu.max`, and joins the child process to that cgroup
+- if cgroup setup is explicitly enabled and fails, launch fails instead of silently continuing
 - the daemon samples `/proc/<pid>/status` to record peak RSS when available
 
 `scancel` behavior:
@@ -444,6 +445,16 @@ Supported `squeue --format` fields:
 - `Time` / `Elapsed`
 - `Reason` / `NodeList(Reason)`
 
+Supported percent-style `squeue --format` codes:
+
+- `%i`
+- `%P`
+- `%j`
+- `%u`
+- `%t` / `%T`
+- `%M`
+- `%R` / `%N`
+
 Notes:
 
 - state uses short codes such as `PD`, `R`, `CG`, `CD`, `F`, `CA`, `TO`, `OOM`
@@ -487,6 +498,8 @@ Supported `sacct --format` fields:
 - `Elapsed`
 - `AllocCPUS`
 - `ReqMem`
+- `ReqTRES`
+- `AllocTRES`
 - `NodeList`
 - `MaxRSS`
 
@@ -495,6 +508,7 @@ Formatting notes:
 - output columns are width-aligned for the human-readable default mode
 - `ExitCode` is currently rendered as `<code>:<signal>`
 - `JobID` renders array tasks as `<array_job_id>_<task_id>`
+- a subset of Slurm-like percent format codes is accepted
 
 ### `scontrol`
 
@@ -502,7 +516,7 @@ Current behavior:
 
 - supports `scontrol show job <job_id>`
 - prints a Slurm-like summary block for one job
-- includes dependency, array metadata, submit/start/end times, resource requests, and resolved paths
+- includes dependency, array metadata, submit/start/end times, resource requests, `ReqTRES`, `AllocTRES`, and resolved paths
 - reports `(null)` for fields that are not populated yet
 
 ### `sinfo`
@@ -527,6 +541,13 @@ Supported `sinfo --format` fields:
 - `Hostnames`
 - `State`
 - `GresUsed`
+
+Supported percent-style `sinfo --format` codes:
+
+- `%P`
+- `%N`
+- `%t` / `%T`
+- `%G`
 
 ## Recovery Behavior
 
@@ -561,9 +582,7 @@ paths by default rather than `/run/slotd` and `/var/lib/slotd`.
 
 The following planned features are not implemented yet:
 
-- real-time `srun` stdio streaming
-- `srun --pty`
-- full Slurm `--format` syntax and field coverage
+- full Slurm `--format` syntax and field-width semantics
 - structured config file
 - `--json` output
 - exact runtime detection for `OUT_OF_MEMORY` without cgroup-backed evidence
@@ -579,9 +598,10 @@ The repository is currently verified by unit tests for:
 - time-limit parsing for `sbatch` / `srun`
 - `#SBATCH` parsing rules
 - supported `--format` field parsing for `squeue`, `sacct`, and `sinfo`
+- supported percent-style `--format` parsing for `squeue`, `sacct`, and `sinfo`
 - output pattern expansion for `%j`, `%A`, `%a`, `%x`, `%u`, `%N`, and `%%`
 - array-spec parsing
 
 The repository also includes a local end-to-end smoke test script at:
 
-- [scripts/smoke_phase5.sh](/home/yu_yamaguchi/workspace/slotd/scripts/smoke_phase5.sh)
+- [scripts/smoke_phase6.sh](/home/yu_yamaguchi/workspace/slotd/scripts/smoke_phase6.sh)

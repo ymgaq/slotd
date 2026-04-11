@@ -136,6 +136,8 @@ pub enum SacctField {
     Elapsed,
     AllocCpus,
     ReqMem,
+    ReqTres,
+    AllocTres,
     NodeList,
     MaxRss,
 }
@@ -155,6 +157,8 @@ impl SacctField {
             Self::Elapsed => "Elapsed",
             Self::AllocCpus => "AllocCPUS",
             Self::ReqMem => "ReqMem",
+            Self::ReqTres => "ReqTRES",
+            Self::AllocTres => "AllocTRES",
             Self::NodeList => "NodeList",
             Self::MaxRss => "MaxRSS",
         }
@@ -183,6 +187,8 @@ impl SacctField {
                 .saturating_mul(job.requested_tasks)
                 .to_string(),
             Self::ReqMem => format!("{}M", job.requested_memory_mb),
+            Self::ReqTres => format_req_tres(job),
+            Self::AllocTres => format_alloc_tres(config, job),
             Self::NodeList => {
                 if matches!(job.state, JobState::Pending) {
                     String::new()
@@ -211,6 +217,8 @@ impl SacctField {
             Self::Elapsed => 11,
             Self::AllocCpus => 9,
             Self::ReqMem => 8,
+            Self::ReqTres => 24,
+            Self::AllocTres => 24,
             Self::NodeList => 12,
             Self::MaxRss => 10,
         }
@@ -289,6 +297,7 @@ pub fn parse_squeue_fields(value: Option<&str>) -> std::result::Result<Vec<Squeu
             SqueueField::Time,
             SqueueField::NodeListReason,
         ]),
+        Some(spec) if spec.contains('%') => parse_percent_squeue_fields(spec),
         Some(spec) => spec
             .split(',')
             .map(|field| match field.trim().to_ascii_lowercase().as_str() {
@@ -317,6 +326,7 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
             SacctField::State,
             SacctField::ExitCode,
         ]),
+        Some(spec) if spec.contains('%') => parse_percent_sacct_fields(spec),
         Some(spec) => spec
             .split(',')
             .map(|field| match field.trim().to_ascii_lowercase().as_str() {
@@ -332,6 +342,8 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
                 "elapsed" => Ok(SacctField::Elapsed),
                 "alloccpus" => Ok(SacctField::AllocCpus),
                 "reqmem" => Ok(SacctField::ReqMem),
+                "reqtres" => Ok(SacctField::ReqTres),
+                "alloctres" => Ok(SacctField::AllocTres),
                 "nodelist" => Ok(SacctField::NodeList),
                 "maxrss" => Ok(SacctField::MaxRss),
                 other => Err(format!("unsupported sacct field: {other}")),
@@ -348,6 +360,7 @@ pub fn parse_sinfo_fields(value: Option<&str>) -> std::result::Result<Vec<SinfoF
             SinfoField::State,
             SinfoField::GresUsed,
         ]),
+        Some(spec) if spec.contains('%') => parse_percent_sinfo_fields(spec),
         Some(spec) => spec
             .split(',')
             .map(|field| match field.trim().to_ascii_lowercase().as_str() {
@@ -359,6 +372,82 @@ pub fn parse_sinfo_fields(value: Option<&str>) -> std::result::Result<Vec<SinfoF
             })
             .collect(),
     }
+}
+
+fn parse_percent_squeue_fields(spec: &str) -> std::result::Result<Vec<SqueueField>, String> {
+    parse_percent_tokens(spec)?
+        .into_iter()
+        .map(|code| match code {
+            'i' => Ok(SqueueField::JobId),
+            'P' => Ok(SqueueField::Partition),
+            'j' => Ok(SqueueField::Name),
+            'u' => Ok(SqueueField::User),
+            't' | 'T' => Ok(SqueueField::StateCompact),
+            'M' => Ok(SqueueField::Time),
+            'R' | 'N' => Ok(SqueueField::NodeListReason),
+            other => Err(format!("unsupported squeue format code: %{other}")),
+        })
+        .collect()
+}
+
+fn parse_percent_sacct_fields(spec: &str) -> std::result::Result<Vec<SacctField>, String> {
+    parse_percent_tokens(spec)?
+        .into_iter()
+        .map(|code| match code {
+            'i' => Ok(SacctField::JobId),
+            'F' => Ok(SacctField::ArrayJobId),
+            'K' => Ok(SacctField::ArrayTaskId),
+            'j' => Ok(SacctField::JobName),
+            'P' => Ok(SacctField::Partition),
+            'u' => Ok(SacctField::User),
+            't' | 'T' => Ok(SacctField::State),
+            'R' => Ok(SacctField::Reason),
+            'X' => Ok(SacctField::ExitCode),
+            'M' => Ok(SacctField::Elapsed),
+            'C' => Ok(SacctField::AllocCpus),
+            'm' => Ok(SacctField::ReqMem),
+            'b' => Ok(SacctField::ReqTres),
+            'B' => Ok(SacctField::AllocTres),
+            'N' => Ok(SacctField::NodeList),
+            other => Err(format!("unsupported sacct format code: %{other}")),
+        })
+        .collect()
+}
+
+fn parse_percent_sinfo_fields(spec: &str) -> std::result::Result<Vec<SinfoField>, String> {
+    parse_percent_tokens(spec)?
+        .into_iter()
+        .map(|code| match code {
+            'P' => Ok(SinfoField::Partition),
+            'N' => Ok(SinfoField::Hostnames),
+            't' | 'T' => Ok(SinfoField::State),
+            'G' => Ok(SinfoField::GresUsed),
+            other => Err(format!("unsupported sinfo format code: %{other}")),
+        })
+        .collect()
+}
+
+fn parse_percent_tokens(spec: &str) -> std::result::Result<Vec<char>, String> {
+    let mut tokens = Vec::new();
+    for raw in spec.split(|c: char| c == ',' || c.is_whitespace()) {
+        let token = raw.trim();
+        if token.is_empty() {
+            continue;
+        }
+        if !token.starts_with('%') {
+            return Err(format!("unsupported format token: {token}"));
+        }
+        let code = token
+            .chars()
+            .rev()
+            .find(|ch| ch.is_ascii_alphabetic())
+            .ok_or_else(|| format!("unsupported format token: {token}"))?;
+        tokens.push(code);
+    }
+    if tokens.is_empty() {
+        return Err("empty format specification".to_string());
+    }
+    Ok(tokens)
 }
 
 #[derive(Debug)]
@@ -472,6 +561,37 @@ fn format_exit_code(job: &JobRecord) -> String {
     )
 }
 
+fn format_req_tres(job: &JobRecord) -> String {
+    let mut values = vec![
+        format!(
+            "cpu={}",
+            job.requested_cpus.saturating_mul(job.requested_tasks)
+        ),
+        format!("mem={}M", job.requested_memory_mb),
+    ];
+    if job.requested_gpus > 0 {
+        values.push(format!("gres/gpu={}", job.requested_gpus));
+    }
+    values.join(",")
+}
+
+fn format_alloc_tres(config: &AppConfig, job: &JobRecord) -> String {
+    let mut values = vec![
+        format!(
+            "cpu={}",
+            job.requested_cpus.saturating_mul(job.requested_tasks)
+        ),
+        format!("mem={}M", job.requested_memory_mb),
+    ];
+    if !matches!(job.state, JobState::Pending) {
+        values.push("node=1".to_string());
+    }
+    if config.is_gpu_partition(&job.partition) && job.requested_gpus > 0 {
+        values.push(format!("gres/gpu={}", job.requested_gpus));
+    }
+    values.join(",")
+}
+
 fn display_job_id(job: &JobRecord) -> String {
     match (job.array_job_id, job.array_task_id) {
         (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
@@ -534,6 +654,18 @@ mod tests {
                 SqueueField::NodeListReason
             ]
         ));
+    }
+
+    #[test]
+    fn parses_percent_style_format_lists() {
+        let squeue = parse_squeue_fields(Some("%i %P %j %u %t %M %R")).expect("squeue");
+        assert_eq!(squeue.len(), 7);
+
+        let sacct = parse_sacct_fields(Some("%i %F %K %j %P %u %T %X %M %b %B")).expect("sacct");
+        assert_eq!(sacct.len(), 11);
+
+        let sinfo = parse_sinfo_fields(Some("%P %N %t %G")).expect("sinfo");
+        assert_eq!(sinfo.len(), 4);
     }
 
     #[test]
