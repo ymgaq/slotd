@@ -2,6 +2,10 @@
 
 `slotd` 是一个使用 Rust 实现的单节点、单用户、具备 Slurm 风格命令界面的调度器。
 
+其他语言文档：
+- [English](https://ymgaq.github.io/slotd/)
+- [日本語版](https://ymgaq.github.io/slotd/ja/)
+
 它面向的是一台工作站，而不是集群。目标是在保留常见 Slurm 命令名和主要选项的同时，显著简化运行模型。
 
 - 一个本地 daemon

@@ -2,6 +2,10 @@
 
 `slotd` は、Rust で実装された単一ノード・単一ユーザー向けの Slurm 風スケジューラです。
 
+他言語のドキュメント:
+- [English](https://ymgaq.github.io/slotd/)
+- [中文版](https://ymgaq.github.io/slotd/cn/)
+
 対象はクラスタではなく 1 台のワークステーションです。一般的な Slurm のコマンド名と主要オプションを残しつつ、実行モデルは意図的に単純化しています。
 
 - 1 つのローカル daemon

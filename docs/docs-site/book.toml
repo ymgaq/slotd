@@ -6,5 +6,5 @@ title = "slotd"
 
 [output.html]
 default-theme = "light"
-git-repository-url = "https://github.com/example/slotd"
+git-repository-url = "https://github.com/ymgaq/slotd"
 site-url = "/slotd/"

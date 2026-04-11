@@ -2,6 +2,10 @@
 
 `slotd` is a Rust-based, single-node, single-user scheduler with a Slurm-style command surface.
 
+Other languages:
+- [日本語](https://ymgaq.github.io/slotd/ja/)
+- [中文版](https://ymgaq.github.io/slotd/cn/)
+
 It is intended for one workstation, not for a cluster. The goal is to keep common Slurm command names and familiar options while simplifying the runtime model:
 
 - one local daemon
