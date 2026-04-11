@@ -21,6 +21,9 @@ Current user-facing commands:
 - `scancel`
 - `sinfo`
 
+Online documentation is [Here](https://ymgaq.github.io/slotd/).
+([日本語版](https://ymgaq.github.io/slotd/ja/), [中文版](https://ymgaq.github.io/slotd/cn/))
+
 ## What It Is
 
 `slotd` is designed for local batch and interactive workloads such as:
