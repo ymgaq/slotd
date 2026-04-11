@@ -66,12 +66,18 @@ The implementation is intentionally Rust-first:
 
 ## Installation
 
+### Clone the repository
+
+```bash
+git clone https://github.com/ymgaq/slotd.git
+cd slotd
+```
+
 ### One-command install
 
 The repository includes a Rust-oriented installer that builds the project and installs the resulting binary:
 
 ```bash
-cd /home/yu_yamaguchi/workspace/slotd
 ./scripts/install.sh
 ```
 

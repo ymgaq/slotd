@@ -7,6 +7,13 @@
 - 如果希望自动管理 daemon，则需要 `systemd --user`
 - 如果希望自动检测 GPU，则需要 `nvidia-smi`
 
+## 克隆仓库
+
+```bash
+git clone https://github.com/ymgaq/slotd.git
+cd slotd
+```
+
 ## 使用附带脚本安装
 
 在仓库根目录运行：

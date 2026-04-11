@@ -7,6 +7,13 @@
 - `systemd --user` if you want automatic daemon management
 - `nvidia-smi` if you want automatic GPU detection
 
+## Clone the Repository
+
+```bash
+git clone https://github.com/ymgaq/slotd.git
+cd slotd
+```
+
 ## Install with the Provided Script
 
 From the repository root:

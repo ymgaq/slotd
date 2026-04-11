@@ -7,6 +7,13 @@
 - daemon を自動管理したい場合は `systemd --user`
 - GPU の自動検出を使いたい場合は `nvidia-smi`
 
+## リポジトリを clone する
+
+```bash
+git clone https://github.com/ymgaq/slotd.git
+cd slotd
+```
+
 ## 付属スクリプトによるインストール
 
 リポジトリルートで実行します。
