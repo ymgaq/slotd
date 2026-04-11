@@ -19,6 +19,7 @@ pub struct RunningJob {
     pub pgid: i32,
     pub pid: i32,
     pub cgroup_path: Option<PathBuf>,
+    pub status_path: Option<PathBuf>,
     handle: JobHandle,
 }
 
@@ -51,8 +52,29 @@ impl Runner {
             Vec::new()
         };
 
+        let status_path = job_status_path(job)
+            .ok_or_else(|| crate::error::SlotdError::from("missing script path for daemon job"))?;
+        let wrapper_path = job_wrapper_path(job);
+        if !wrapper_path.exists() {
+            std::fs::write(
+                &wrapper_path,
+                format!(
+                    "#!/usr/bin/env bash\n/bin/bash {} \ncode=$?\nprintf '%s\\n' \"$code\" > {}\nexit \"$code\"\n",
+                    shell_quote_path(&job.script_path),
+                    shell_quote_path(&status_path.to_string_lossy())
+                ),
+            )?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = std::fs::metadata(&wrapper_path)?.permissions();
+                perms.set_mode(0o755);
+                std::fs::set_permissions(&wrapper_path, perms)?;
+            }
+        }
+
         let mut command = Command::new("/bin/bash");
-        command.arg(&job.script_path);
+        command.arg(&wrapper_path);
         command.current_dir(&job.cwd);
         command.stdin(Stdio::null());
         command.stdout(Stdio::from(stdout));
@@ -93,6 +115,7 @@ impl Runner {
                 pgid,
                 pid,
                 cgroup_path,
+                status_path: Some(status_path),
                 handle: JobHandle::Child(child),
             },
         );
@@ -111,6 +134,7 @@ impl Runner {
                 pgid,
                 pid: job.pid.unwrap_or_default(),
                 cgroup_path: job_cgroup_path(config, job.id),
+                status_path: job_status_path(job),
                 handle: JobHandle::Adopted,
             },
         );
@@ -121,12 +145,9 @@ impl Runner {
         for (&job_id, running) in &self.jobs {
             if let JobHandle::Adopted = running.handle {
                 if !process_group_alive(running.pgid)? {
-                    let (state, reason) = if cgroup_oomed(running.cgroup_path.as_deref()) {
-                        (JobState::OutOfMemory, "OutOfMemory")
-                    } else {
-                        (JobState::Failed, "LostAfterRestart")
-                    };
-                    store.mark_finished(job_id, state, None, None, Some(reason))?;
+                    let (state, exit_code, reason) =
+                        recovered_terminal_state(&running.status_path, running.cgroup_path.as_deref());
+                    store.mark_finished(job_id, state, exit_code, None, Some(reason))?;
                     cleanup_cgroup(running.cgroup_path.as_deref());
                     finished.push(job_id);
                 }
@@ -341,6 +362,49 @@ pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {
 
 fn join_gpu_ids(ids: &[u32]) -> String {
     ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
+}
+
+fn job_status_path(job: &JobRecord) -> Option<PathBuf> {
+    if job.script_path.is_empty() {
+        return None;
+    }
+    Some(
+        Path::new(&job.script_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("exit_status"),
+    )
+}
+
+fn job_wrapper_path(job: &JobRecord) -> PathBuf {
+    Path::new(&job.script_path)
+        .parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("runner.sh")
+}
+
+fn recovered_terminal_state(
+    status_path: &Option<PathBuf>,
+    cgroup_path: Option<&Path>,
+) -> (JobState, Option<i32>, &'static str) {
+    if cgroup_oomed(cgroup_path) {
+        return (JobState::OutOfMemory, None, "OutOfMemory");
+    }
+    if let Some(exit_code) = status_path
+        .as_ref()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|value| value.trim().parse::<i32>().ok())
+    {
+        return match exit_code {
+            0 => (JobState::Completed, Some(0), "Completed"),
+            code => (JobState::Failed, Some(code), "NonZeroExitCode"),
+        };
+    }
+    (JobState::Failed, None, "LostAfterRestart")
+}
+
+fn shell_quote_path(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn setup_job_cgroup(config: &AppConfig, job: &JobRecord, pid: i32) -> Result<Option<PathBuf>> {
