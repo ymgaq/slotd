@@ -47,6 +47,35 @@ pub fn print_sacct_jobs(
     );
 }
 
+pub fn print_sacct_jobs_delimited(
+    config: &AppConfig,
+    jobs: &[JobRecord],
+    fields: &[SacctField],
+    noheader: bool,
+    delimiter: &str,
+) {
+    if !noheader {
+        println!(
+            "{}",
+            fields
+                .iter()
+                .map(|field| field.header().to_string())
+                .collect::<Vec<_>>()
+                .join(delimiter)
+        );
+    }
+    for job in jobs {
+        println!(
+            "{}",
+            fields
+                .iter()
+                .map(|field| field.render(config, job))
+                .collect::<Vec<_>>()
+                .join(delimiter)
+        );
+    }
+}
+
 pub fn print_sinfo(
     config: &AppConfig,
     partitions: &[PartitionInfo],
@@ -139,6 +168,11 @@ pub enum SacctField {
     ReqTres,
     AllocTres,
     NodeList,
+    Submit,
+    Start,
+    End,
+    WorkDir,
+    BatchFlag,
     MaxRss,
 }
 
@@ -160,6 +194,11 @@ impl SacctField {
             Self::ReqTres => "ReqTRES",
             Self::AllocTres => "AllocTRES",
             Self::NodeList => "NodeList",
+            Self::Submit => "Submit",
+            Self::Start => "Start",
+            Self::End => "End",
+            Self::WorkDir => "WorkDir",
+            Self::BatchFlag => "BatchFlag",
             Self::MaxRss => "MaxRSS",
         }
     }
@@ -196,6 +235,11 @@ impl SacctField {
                     config.hostname.clone()
                 }
             }
+            Self::Submit => format_timestamp(job.submit_time),
+            Self::Start => job.start_time.map(format_timestamp).unwrap_or_default(),
+            Self::End => job.end_time.map(format_timestamp).unwrap_or_default(),
+            Self::WorkDir => job.cwd.clone(),
+            Self::BatchFlag => if job.allocation_only { "0" } else { "1" }.to_string(),
             Self::MaxRss => job
                 .max_rss_kb
                 .map(|value| format!("{value}K"))
@@ -220,6 +264,11 @@ impl SacctField {
             Self::ReqTres => 24,
             Self::AllocTres => 24,
             Self::NodeList => 12,
+            Self::Submit => 19,
+            Self::Start => 19,
+            Self::End => 19,
+            Self::WorkDir => 24,
+            Self::BatchFlag => 9,
             Self::MaxRss => 10,
         }
     }
@@ -234,6 +283,7 @@ impl SacctField {
                 | Self::Elapsed
                 | Self::AllocCpus
                 | Self::ReqMem
+                | Self::BatchFlag
                 | Self::MaxRss
         )
     }
@@ -345,6 +395,11 @@ pub fn parse_sacct_fields(value: Option<&str>) -> std::result::Result<Vec<SacctF
                 "reqtres" => Ok(SacctField::ReqTres),
                 "alloctres" => Ok(SacctField::AllocTres),
                 "nodelist" => Ok(SacctField::NodeList),
+                "submit" => Ok(SacctField::Submit),
+                "start" => Ok(SacctField::Start),
+                "end" => Ok(SacctField::End),
+                "workdir" => Ok(SacctField::WorkDir),
+                "batchflag" => Ok(SacctField::BatchFlag),
                 "maxrss" => Ok(SacctField::MaxRss),
                 other => Err(format!("unsupported sacct field: {other}")),
             })
@@ -409,6 +464,10 @@ fn parse_percent_sacct_fields(spec: &str) -> std::result::Result<Vec<SacctField>
             'b' => Ok(SacctField::ReqTres),
             'B' => Ok(SacctField::AllocTres),
             'N' => Ok(SacctField::NodeList),
+            'V' => Ok(SacctField::Submit),
+            'S' => Ok(SacctField::Start),
+            'E' => Ok(SacctField::End),
+            'Z' => Ok(SacctField::WorkDir),
             other => Err(format!("unsupported sacct format code: %{other}")),
         })
         .collect()
@@ -536,6 +595,25 @@ fn format_duration(seconds: i64) -> String {
     } else {
         format!("{hours}:{minutes:02}:{secs:02}")
     }
+}
+
+fn format_timestamp(value: i64) -> String {
+    let days = value.div_euclid(86_400);
+    let secs = value.rem_euclid(86_400) as u32;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    let hour = secs / 3_600;
+    let minute = (secs % 3_600) / 60;
+    let second = secs % 60;
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
 }
 
 fn squeue_nodelist_reason(config: &AppConfig, job: &JobRecord) -> String {

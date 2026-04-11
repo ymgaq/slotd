@@ -14,8 +14,8 @@ use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, SubmitRequest};
 use crate::output::{
-    parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs, print_sinfo,
-    print_squeue_jobs,
+    parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
+    print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs,
 };
 use crate::sbatch::{parse_directives, parse_mem_mb, parse_time_limit_secs};
 
@@ -102,6 +102,10 @@ pub struct SqueueArgs {
     partitions: Option<Vec<String>>,
     #[arg(short = 'o', long = "format")]
     format: Option<String>,
+    #[arg(short = 'S', long = "sort")]
+    sort: Option<String>,
+    #[arg(short = 'l', long = "long")]
+    long: bool,
     #[arg(long = "noheader")]
     noheader: bool,
 }
@@ -122,6 +126,8 @@ pub struct SacctArgs {
     partitions: Option<Vec<String>>,
     #[arg(short = 'o', long = "format")]
     format: Option<String>,
+    #[arg(short = 'P', long = "parsable2")]
+    parsable2: bool,
     #[arg(short = 'n', long = "noheader")]
     noheader: bool,
 }
@@ -186,6 +192,10 @@ pub struct SallocArgs {
 pub struct SinfoArgs {
     #[arg(short = 'p', long = "partition", value_delimiter = ',')]
     partitions: Option<Vec<String>>,
+    #[arg(short = 'N', long = "Node")]
+    node: bool,
+    #[arg(short = 'l', long = "long")]
+    long: bool,
     #[arg(short = 'o', long = "format")]
     format: Option<String>,
     #[arg(long = "noheader")]
@@ -546,6 +556,7 @@ fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
         },
     )? {
         Response::Jobs { jobs } => {
+            let jobs = sort_squeue_jobs(jobs, args.sort.as_deref());
             print_squeue_jobs(&config, &jobs, &fields, args.noheader);
             Ok(())
         }
@@ -623,7 +634,11 @@ fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
         },
     )? {
         Response::Jobs { jobs } => {
-            print_sacct_jobs(&config, &jobs, &fields, args.noheader);
+            if args.parsable2 {
+                print_sacct_jobs_delimited(&config, &jobs, &fields, args.noheader, "|");
+            } else {
+                print_sacct_jobs(&config, &jobs, &fields, args.noheader);
+            }
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -1330,6 +1345,30 @@ fn filter_partitions(
                 .unwrap_or(true)
         })
         .collect()
+}
+
+fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobRecord> {
+    let Some(sort) = sort.map(str::trim).filter(|value| !value.is_empty()) else {
+        return jobs;
+    };
+    let descending = sort.starts_with('-');
+    let key = sort.trim_start_matches(['+', '-']);
+    jobs.sort_by(|a, b| {
+        let ordering = match key.to_ascii_lowercase().as_str() {
+            "i" | "jobid" => a.id.cmp(&b.id),
+            "p" | "partition" => a.partition.cmp(&b.partition),
+            "u" | "user" => a.user_name.cmp(&b.user_name),
+            "t" | "state" => a.state.as_str().cmp(b.state.as_str()),
+            "m" | "time" => a.start_time.cmp(&b.start_time),
+            _ => a.id.cmp(&b.id),
+        };
+        if descending {
+            ordering.reverse()
+        } else {
+            ordering
+        }
+    });
+    jobs
 }
 
 fn parse_datetime_parts(value: &str) -> Option<(i32, u32, u32, u32, u32, u32)> {
