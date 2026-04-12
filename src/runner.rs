@@ -18,7 +18,10 @@ use crate::error::Result;
 use crate::job::{JobRecord, JobState, OpenMode};
 use crate::launch::{LaunchCommand, build_multitask_launcher};
 use crate::notify::notify_job;
+use crate::slurm_env::apply_slurm_env;
 use crate::store::Store;
+use crate::store_support::join_gpu_ids;
+use crate::time::now_ts;
 
 pub struct RunningJob {
     pub pgid: i32,
@@ -88,19 +91,7 @@ impl Runner {
         command.stdout(Stdio::from(stdout));
         command.stderr(Stdio::from(stderr));
         command.envs(job.export_env.iter().cloned());
-        command.env("SLURM_JOB_ID", job.id.to_string());
-        command.env("SLURM_JOB_NAME", &job.name);
-        command.env("SLURM_JOB_PARTITION", &job.partition);
-        command.env("SLURM_JOB_NODELIST", store.config().hostname.clone());
-        command.env("SLURM_SUBMIT_DIR", &job.cwd);
-        command.env("SLURM_NTASKS", job.requested_tasks.max(1).to_string());
-        command.env("SLURM_CPUS_PER_TASK", job.requested_cpus.to_string());
-        if let Some(array_job_id) = job.array_job_id {
-            command.env("SLURM_ARRAY_JOB_ID", array_job_id.to_string());
-        }
-        if let Some(array_task_id) = job.array_task_id {
-            command.env("SLURM_ARRAY_TASK_ID", array_task_id.to_string());
-        }
+        apply_slurm_env(&mut command, store.config(), job);
         if !assigned_gpu_ids.is_empty() {
             command.env("CUDA_VISIBLE_DEVICES", join_gpu_ids(&assigned_gpu_ids));
         }
@@ -439,20 +430,8 @@ fn wait_for_group_exit(pgid: i32, timeout_secs: u64) -> Result<()> {
     Ok(())
 }
 
-fn now_ts() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {
     process_group_alive(pgid)
-}
-
-fn join_gpu_ids(ids: &[u32]) -> String {
-    ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
 }
 
 fn open_output_file(path: &str, open_mode: OpenMode) -> Result<File> {

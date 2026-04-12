@@ -15,6 +15,7 @@ mod output;
 mod recovery;
 mod runner;
 mod sbatch;
+mod slurm_env;
 mod signals;
 mod store;
 mod store_support;
