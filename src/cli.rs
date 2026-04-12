@@ -19,6 +19,7 @@ use crate::env::{parse_env_flag, resolve_export_env};
 use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
+use crate::job_display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
 use crate::launch::{LaunchCommand, build_multitask_launcher, shell_join};
 use crate::output::{
     NodeSinfoRow, parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
@@ -2160,49 +2161,10 @@ fn resolve_job_reference(config: &AppConfig, value: &str) -> Result<i64> {
         .map_err(|_| SlotdError::from(format!("invalid job id: {value}")))
 }
 
-fn format_exit_status(job: &JobRecord) -> String {
-    format!(
-        "{}:{}",
-        job.exit_code.unwrap_or(0),
-        job.term_signal.unwrap_or(0)
-    )
-}
-
 fn format_optional_timestamp(value: Option<i64>) -> String {
     value
         .map(format_timestamp)
         .unwrap_or_else(|| "Unknown".to_string())
-}
-
-fn format_job_req_tres(job: &JobRecord) -> String {
-    let mut values = vec![
-        format!(
-            "cpu={}",
-            job.requested_cpus.saturating_mul(job.requested_tasks)
-        ),
-        format!("mem={}M", job.requested_memory_mb),
-    ];
-    if job.requested_gpus > 0 {
-        values.push(format!("gres/gpu={}", job.requested_gpus));
-    }
-    values.join(",")
-}
-
-fn format_job_alloc_tres(config: &AppConfig, job: &JobRecord) -> String {
-    let mut values = vec![
-        format!(
-            "cpu={}",
-            job.requested_cpus.saturating_mul(job.requested_tasks)
-        ),
-        format!("mem={}M", job.requested_memory_mb),
-    ];
-    if job.state != JobState::Pending {
-        values.push("node=1".to_string());
-    }
-    if config.is_gpu_partition(&job.partition) && job.requested_gpus > 0 {
-        values.push(format!("gres/gpu={}", job.requested_gpus));
-    }
-    values.join(",")
 }
 
 fn setup_local_cgroup(

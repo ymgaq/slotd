@@ -1,8 +1,9 @@
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::config::AppConfig;
 use crate::job::{JobRecord, JobState, PartitionInfo};
+use crate::job_display::{display_job_id, format_exit_status, format_job_alloc_tres, format_job_req_tres};
+use crate::time::{format_timestamp, now_ts};
 
 pub fn print_squeue_jobs(
     config: &AppConfig,
@@ -322,15 +323,15 @@ impl SacctField {
             Self::User => job.user_name.clone(),
             Self::State => job.state.as_str().to_string(),
             Self::Reason => job.state_reason.clone().unwrap_or_default(),
-            Self::ExitCode => format_exit_code(job),
+            Self::ExitCode => format_exit_status(job),
             Self::Elapsed => format_elapsed(job),
             Self::AllocCpus => job
                 .requested_cpus
                 .saturating_mul(job.requested_tasks)
                 .to_string(),
             Self::ReqMem => format!("{}M", job.requested_memory_mb),
-            Self::ReqTres => format_req_tres(job),
-            Self::AllocTres => format_alloc_tres(config, job),
+            Self::ReqTres => format_job_req_tres(job),
+            Self::AllocTres => format_job_alloc_tres(config, job),
             Self::NodeList => {
                 if matches!(job.state, JobState::Pending) {
                     String::new()
@@ -834,25 +835,6 @@ fn format_duration(seconds: i64) -> String {
     }
 }
 
-fn format_timestamp(value: i64) -> String {
-    let days = value.div_euclid(86_400);
-    let secs = value.rem_euclid(86_400) as u32;
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if month <= 2 { 1 } else { 0 };
-    let hour = secs / 3_600;
-    let minute = (secs % 3_600) / 60;
-    let second = secs % 60;
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
-}
-
 fn squeue_nodelist_reason(config: &AppConfig, job: &JobRecord) -> String {
     match job.state {
         JobState::Pending => format_reason(job.state_reason.as_deref().unwrap_or("Resources")),
@@ -868,64 +850,8 @@ fn squeue_nodelist_reason(config: &AppConfig, job: &JobRecord) -> String {
     }
 }
 
-fn format_exit_code(job: &JobRecord) -> String {
-    format!(
-        "{}:{}",
-        job.exit_code.unwrap_or(0),
-        job.term_signal.unwrap_or(0)
-    )
-}
-
-fn format_req_tres(job: &JobRecord) -> String {
-    let mut values = vec![
-        format!(
-            "cpu={}",
-            job.requested_cpus.saturating_mul(job.requested_tasks)
-        ),
-        format!("mem={}M", job.requested_memory_mb),
-    ];
-    if job.requested_gpus > 0 {
-        values.push(format!("gres/gpu={}", job.requested_gpus));
-    }
-    values.join(",")
-}
-
-fn format_alloc_tres(config: &AppConfig, job: &JobRecord) -> String {
-    let mut values = vec![
-        format!(
-            "cpu={}",
-            job.requested_cpus.saturating_mul(job.requested_tasks)
-        ),
-        format!("mem={}M", job.requested_memory_mb),
-    ];
-    if !matches!(job.state, JobState::Pending) {
-        values.push("node=1".to_string());
-    }
-    if config.is_gpu_partition(&job.partition) && job.requested_gpus > 0 {
-        values.push(format!("gres/gpu={}", job.requested_gpus));
-    }
-    values.join(",")
-}
-
-fn display_job_id(job: &JobRecord) -> String {
-    if let (Some(parent_job_id), Some(step_id)) = (job.parent_job_id, job.step_id) {
-        return format!("{parent_job_id}.{step_id}");
-    }
-    match (job.array_job_id, job.array_task_id) {
-        (Some(array_job_id), Some(array_task_id)) => format!("{array_job_id}_{array_task_id}"),
-        _ => job.id.to_string(),
-    }
-}
-
 fn format_reason(reason: &str) -> String {
     format!("({reason})")
-}
-
-fn now_ts() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

@@ -7,6 +7,7 @@ mod env;
 mod error;
 mod ipc;
 mod job;
+mod job_display;
 mod launch;
 mod notify;
 mod output;
