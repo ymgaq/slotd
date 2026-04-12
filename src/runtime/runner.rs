@@ -12,10 +12,10 @@ use nix::sched::{CpuSet, sched_setaffinity};
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, setsid};
 
-use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::app::config::AppConfig;
 use crate::app::error::Result;
 use crate::model::job::{JobRecord, JobState, OpenMode};
+use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
 use crate::runtime::notify::notify_job;
 use crate::runtime::slurm_env::apply_slurm_env;
@@ -61,8 +61,9 @@ impl Runner {
             Vec::new()
         };
 
-        let status_path = job_status_path(job)
-            .ok_or_else(|| crate::app::error::SlotdError::from("missing script path for daemon job"))?;
+        let status_path = job_status_path(job).ok_or_else(|| {
+            crate::app::error::SlotdError::from("missing script path for daemon job")
+        })?;
         let wrapper_path = job_wrapper_path(job);
         std::fs::write(
             &wrapper_path,
@@ -305,8 +306,9 @@ impl Runner {
         let Some(running) = self.jobs.get(&job_id) else {
             return Ok(false);
         };
-        let signal = Signal::try_from(signal)
-            .map_err(|_| crate::app::error::SlotdError::from(format!("unsupported signal: {signal}")))?;
+        let signal = Signal::try_from(signal).map_err(|_| {
+            crate::app::error::SlotdError::from(format!("unsupported signal: {signal}"))
+        })?;
         let _ = killpg(Pid::from_raw(running.pgid), signal);
         Ok(true)
     }

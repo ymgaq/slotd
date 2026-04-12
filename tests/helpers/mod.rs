@@ -71,9 +71,7 @@ impl TestRuntime {
     }
 
     pub fn submit_batch(&self, args: &[&str]) -> i64 {
-        self.run_checked(args)
-            .parse::<i64>()
-            .expect("parse job id")
+        self.run_checked(args).parse::<i64>().expect("parse job id")
     }
 
     pub fn submit_pending_afterok(&self, blocker_partition: &str, args: &[&str]) -> (i64, i64) {

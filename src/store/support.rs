@@ -118,7 +118,11 @@ pub(crate) fn filter_jobs(
             let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
             let user_ok = user_name.map(|name| job.user_name == name).unwrap_or(true);
             let partition_ok = partitions
-                .map(|partitions| partitions.iter().any(|partition| partition == &job.partition))
+                .map(|partitions| {
+                    partitions
+                        .iter()
+                        .any(|partition| partition == &job.partition)
+                })
                 .unwrap_or(true);
             let start_ok = start_time
                 .map(|start| {

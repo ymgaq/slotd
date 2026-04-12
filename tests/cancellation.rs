@@ -27,7 +27,10 @@ fn assert_signal_result(signal: &str, expected_signal_code: i32) {
     }
 
     let exit_code = format!("ExitCode=0:{expected_signal_code}");
-    runtime.assert_job_details_contains(running_job_id, &["State=FAILED", "Reason=Signal", &exit_code]);
+    runtime.assert_job_details_contains(
+        running_job_id,
+        &["State=FAILED", "Reason=Signal", &exit_code],
+    );
 }
 
 #[test]

@@ -21,7 +21,11 @@ pub(crate) fn resolve_cpu_bind_ids(
     }
     if let Some(list) = normalized.strip_prefix("map_cpu:") {
         let mut cpus = Vec::new();
-        for part in list.split(',').map(str::trim).filter(|part| !part.is_empty()) {
+        for part in list
+            .split(',')
+            .map(str::trim)
+            .filter(|part| !part.is_empty())
+        {
             let cpu = part
                 .parse::<usize>()
                 .map_err(|_| SlotdError::from(format!("invalid cpu-bind cpu id: {part}")))?;

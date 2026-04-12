@@ -12,8 +12,8 @@ use std::ffi::OsString;
 
 use clap::Parser;
 
-use crate::command::cli::{Cli, dispatch_argv0};
 use crate::app::error::Result;
+use crate::command::cli::{Cli, dispatch_argv0};
 
 fn main() {
     if let Err(error) = run() {

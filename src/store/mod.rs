@@ -9,12 +9,12 @@ use rusqlite::{Connection, OptionalExtension, params};
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
 use crate::model::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
+use crate::store::support::{
+    default_name, ensure_parent_dir, filter_jobs, join_gpu_ids, order_pending_jobs, parse_gpu_ids,
+    partition_gres_used, partition_state, path_string, script_command,
+};
 use crate::submit::sbatch::{
     default_batch_output_pattern, expand_output_pattern, parse_array_spec, resolve_log_path,
-};
-use crate::store::support::{
-    default_name, ensure_parent_dir, filter_jobs, join_gpu_ids, order_pending_jobs,
-    parse_gpu_ids, partition_gres_used, partition_state, path_string, script_command,
 };
 use crate::util::time::now_ts;
 use row::{JOB_SELECT_COLUMNS, map_job};
@@ -259,14 +259,12 @@ impl Store {
     }
 
     pub fn list_steps(&self, parent_job_id: i64) -> Result<Vec<JobRecord>> {
-        let mut stmt = self.conn.prepare(
-            &format!(
-                "SELECT {JOB_SELECT_COLUMNS}
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE parent_job_id = ?1
              ORDER BY step_id ASC, id ASC"
-            ),
-        )?;
+        ))?;
         let rows = stmt.query_map([parent_job_id], map_job)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
@@ -283,13 +281,11 @@ impl Store {
         user_name: Option<&str>,
         partitions: Option<&[String]>,
     ) -> Result<Vec<JobRecord>> {
-        let mut stmt = self.conn.prepare(
-            &format!(
-                "SELECT {JOB_SELECT_COLUMNS}
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE parent_job_id IS NULL"
-            )
-        )?;
+        ))?;
         let rows = stmt.query_map([], map_job)?;
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| b.id.cmp(&a.id));
@@ -307,9 +303,9 @@ impl Store {
         start_time: Option<i64>,
         end_time: Option<i64>,
     ) -> Result<Vec<JobRecord>> {
-        let mut stmt = self.conn.prepare(
-            &format!("SELECT {JOB_SELECT_COLUMNS} FROM jobs")
-        )?;
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {JOB_SELECT_COLUMNS} FROM jobs"))?;
         let rows = stmt.query_map([], map_job)?;
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         jobs.sort_by(|a, b| b.id.cmp(&a.id));
@@ -319,14 +315,12 @@ impl Store {
     }
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
-        let mut stmt = self.conn.prepare(
-            &format!(
-                "SELECT {JOB_SELECT_COLUMNS}
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE state = 'RUNNING'
              ORDER BY id ASC"
-            ),
-        )?;
+        ))?;
         let rows = stmt.query_map([], map_job)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
             .map_err(Into::into)
@@ -348,15 +342,13 @@ impl Store {
     }
 
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
-        let mut stmt = self.conn.prepare(
-            &format!(
-                "SELECT {JOB_SELECT_COLUMNS}
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE state = 'PENDING' AND parent_job_id IS NULL
              ORDER BY id ASC
             "
-            ),
-        )?;
+        ))?;
         let rows = stmt.query_map([], map_job)?;
         let jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(order_pending_jobs(jobs))

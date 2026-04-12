@@ -6,8 +6,8 @@ use std::time::Duration;
 
 use crate::app::config::AppConfig;
 use crate::app::error::Result;
-use crate::proto::ipc::{Request, Response};
 use crate::model::job::{JobRecord, JobState, SubmitRequest};
+use crate::proto::ipc::{Request, Response};
 use crate::runtime::notify::notify_job;
 use crate::runtime::recovery;
 use crate::runtime::runner::Runner;

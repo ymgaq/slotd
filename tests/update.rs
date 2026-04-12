@@ -22,7 +22,11 @@ fn scontrol_update_changes_pending_job_fields() {
 
     runtime.assert_job_details_contains(
         job_id,
-        &["JobName=updated-name", "TimeLimit=00:00:05", "State=PENDING"],
+        &[
+            "JobName=updated-name",
+            "TimeLimit=00:00:05",
+            "State=PENDING",
+        ],
     );
 
     runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));

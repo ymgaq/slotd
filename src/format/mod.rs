@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
 use crate::app::config::AppConfig;
+use crate::model::display::{
+    display_job_id, format_exit_status, format_job_alloc_tres, format_job_req_tres,
+};
 use crate::model::job::{JobRecord, JobState, PartitionInfo};
-use crate::model::display::{display_job_id, format_exit_status, format_job_alloc_tres, format_job_req_tres};
 use crate::util::time::{format_timestamp, now_ts};
 
 pub fn print_squeue_jobs(

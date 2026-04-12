@@ -6,21 +6,23 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::command::handlers;
 use crate::app::config::AppConfig;
-use crate::runtime::daemon;
-use crate::util::env::{parse_env_flag, resolve_export_env};
 use crate::app::error::{Result, SlotdError};
+use crate::command::handlers;
+use crate::format::NodeSinfoRow;
+use crate::model::display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
+use crate::model::job::{JobRecord, JobState, OpenMode, SubmitRequest};
+use crate::proto::ipc::{Request, Response, send_request};
+use crate::runtime::daemon;
 use crate::runtime::foreground::{
     ForegroundExecutionOptions, ForegroundIoOptions, run_foreground_allocation,
     run_foreground_allocation_with_mode, run_foreground_step,
 };
-use crate::proto::ipc::{Request, Response, send_request};
-use crate::model::job::{JobRecord, JobState, OpenMode, SubmitRequest};
-use crate::model::display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
 use crate::runtime::launch::shell_join;
-use crate::format::NodeSinfoRow;
-use crate::submit::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
+use crate::submit::sbatch::{
+    BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs,
+};
+use crate::util::env::{parse_env_flag, resolve_export_env};
 use crate::util::signals::parse_warning_signal;
 use crate::util::time::{format_duration_secs, format_timestamp, now_ts, parse_begin_time};
 
@@ -1099,7 +1101,6 @@ fn merge_batch_directives(
     }
 }
 
-
 pub(crate) fn estimate_start_times(
     config: &AppConfig,
     jobs: &[JobRecord],
@@ -1354,13 +1355,13 @@ mod tests {
         parse_warning_signal,
     };
     use crate::app::config::AppConfig;
-    use crate::runtime::cpu::resolve_cpu_bind_ids;
-    use crate::util::env::resolve_export_spec;
     use crate::model::job::{JobRecord, JobState, OpenMode};
+    use crate::runtime::cpu::resolve_cpu_bind_ids;
+    use crate::submit::sbatch::BatchDirectives;
+    use crate::util::env::resolve_export_spec;
     use crate::util::signals::parse_signal_name;
     use crate::util::time::now_ts;
     use crate::util::time::parse_time_filter;
-    use crate::submit::sbatch::BatchDirectives;
 
     #[test]
     fn argv0_dispatch_inserts_slurm_alias() {

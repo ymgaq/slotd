@@ -5,12 +5,12 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::app::config::AppConfig;
-use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::app::error::{Result, SlotdError};
-use crate::proto::ipc::{Request, Response, send_request};
 use crate::model::job::{JobRecord, JobState};
+use crate::proto::ipc::{Request, Response, send_request};
+use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
+use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher, shell_join};
 use crate::runtime::slurm_env::apply_slurm_env;
 
@@ -71,9 +71,9 @@ pub(crate) fn run_foreground_allocation_with_mode(
         step_record.as_ref().unwrap_or(job),
     );
     let cpu_ids = resolve_cpu_bind_ids(
-        options
-            .cpu_bind
-            .or(step_record.as_ref().and_then(|step| step.cpu_bind.as_deref())),
+        options.cpu_bind.or(step_record
+            .as_ref()
+            .and_then(|step| step.cpu_bind.as_deref())),
         config.total_cpus,
         job.requested_cpus
             .saturating_mul(job.requested_tasks)
@@ -319,7 +319,11 @@ pub(crate) fn run_foreground_step(
     }
 }
 
-fn start_step_record(config: &AppConfig, parent: &JobRecord, command: &[String]) -> Result<JobRecord> {
+fn start_step_record(
+    config: &AppConfig,
+    parent: &JobRecord,
+    command: &[String],
+) -> Result<JobRecord> {
     let step_job_id = match send_request(
         config,
         &Request::StartStep {
@@ -340,7 +344,12 @@ fn start_step_record(config: &AppConfig, parent: &JobRecord, command: &[String])
         }
     };
 
-    match send_request(config, &Request::GetJob { job_id: step_job_id })? {
+    match send_request(
+        config,
+        &Request::GetJob {
+            job_id: step_job_id,
+        },
+    )? {
         Response::Job { job } => {
             (*job).ok_or_else(|| SlotdError::from(format!("step {step_job_id} disappeared")))
         }
