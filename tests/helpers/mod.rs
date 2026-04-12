@@ -87,6 +87,27 @@ impl TestRuntime {
         }
     }
 
+    pub fn wait_for_job_state_in(
+        &self,
+        job_id: i64,
+        expected_states: &[&str],
+        timeout: Duration,
+    ) -> String {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let state = self.job_state(job_id);
+            if expected_states.iter().any(|expected| *expected == state) {
+                return state;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for job {job_id} to reach one of {:?}; last state: {state}",
+                expected_states
+            );
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     pub fn assert_job_state_stable(&self, job_id: i64, expected_state: &str, duration: Duration) {
         let deadline = Instant::now() + duration;
         loop {
