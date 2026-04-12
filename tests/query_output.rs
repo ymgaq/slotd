@@ -34,9 +34,11 @@ fn squeue_filters_views_and_sorting_work_for_active_jobs() {
         .parse::<i64>()
         .expect("parse pending job id");
 
-    let running_state = runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
+    let running_state =
+        runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(running_state, "RUNNING");
-    let pending_state = runtime.wait_for_job_state(pending_job_id, "PENDING", Duration::from_secs(2));
+    let pending_state =
+        runtime.wait_for_job_state(pending_job_id, "PENDING", Duration::from_secs(2));
     assert_eq!(pending_state, "PENDING");
 
     let listed = runtime.run_checked(&[
@@ -47,8 +49,14 @@ fn squeue_filters_views_and_sorting_work_for_active_jobs() {
         "-o",
         "JobID,State,Partition",
     ]);
-    assert!(listed.contains(&blocker_job_id.to_string()), "squeue:\n{listed}");
-    assert!(listed.contains(&pending_job_id.to_string()), "squeue:\n{listed}");
+    assert!(
+        listed.contains(&blocker_job_id.to_string()),
+        "squeue:\n{listed}"
+    );
+    assert!(
+        listed.contains(&pending_job_id.to_string()),
+        "squeue:\n{listed}"
+    );
     assert!(listed.contains("R"), "squeue:\n{listed}");
     assert!(listed.contains("PD"), "squeue:\n{listed}");
 
@@ -62,8 +70,14 @@ fn squeue_filters_views_and_sorting_work_for_active_jobs() {
         "-o",
         "JobID,State",
     ]);
-    assert!(!pending_only.contains(&blocker_job_id.to_string()), "squeue:\n{pending_only}");
-    assert!(pending_only.contains(&pending_job_id.to_string()), "squeue:\n{pending_only}");
+    assert!(
+        !pending_only.contains(&blocker_job_id.to_string()),
+        "squeue:\n{pending_only}"
+    );
+    assert!(
+        pending_only.contains(&pending_job_id.to_string()),
+        "squeue:\n{pending_only}"
+    );
 
     let partition_filtered = runtime.run_checked(&[
         "squeue",
@@ -75,8 +89,33 @@ fn squeue_filters_views_and_sorting_work_for_active_jobs() {
         "-o",
         "JobID,Partition",
     ]);
-    assert!(partition_filtered.contains(&blocker_job_id.to_string()), "squeue:\n{partition_filtered}");
-    assert!(partition_filtered.contains("cpu"), "squeue:\n{partition_filtered}");
+    assert!(
+        partition_filtered.contains(&blocker_job_id.to_string()),
+        "squeue:\n{partition_filtered}"
+    );
+    assert!(
+        partition_filtered.contains("cpu"),
+        "squeue:\n{partition_filtered}"
+    );
+
+    let user_filtered = runtime.run_checked(&[
+        "squeue",
+        "--noheader",
+        "-u",
+        "slotd-test",
+        "-j",
+        &format!("{blocker_job_id},{pending_job_id}"),
+        "-o",
+        "JobID,User",
+    ]);
+    assert!(
+        user_filtered.contains(&blocker_job_id.to_string()),
+        "squeue:\n{user_filtered}"
+    );
+    assert!(
+        user_filtered.contains("slotd-test"),
+        "squeue:\n{user_filtered}"
+    );
 
     let sorted = runtime.run_checked(&[
         "squeue",
@@ -101,7 +140,10 @@ fn squeue_filters_views_and_sorting_work_for_active_jobs() {
         "-j",
         &blocker_job_id.to_string(),
     ]);
-    assert!(long_view.contains(&blocker_job_id.to_string()), "squeue:\n{long_view}");
+    assert!(
+        long_view.contains(&blocker_job_id.to_string()),
+        "squeue:\n{long_view}"
+    );
     assert!(long_view.contains("512M"), "squeue:\n{long_view}");
 
     let start_view = runtime.run_checked(&[
@@ -111,7 +153,10 @@ fn squeue_filters_views_and_sorting_work_for_active_jobs() {
         "-j",
         &pending_job_id.to_string(),
     ]);
-    assert!(start_view.contains(&pending_job_id.to_string()), "squeue:\n{start_view}");
+    assert!(
+        start_view.contains(&pending_job_id.to_string()),
+        "squeue:\n{start_view}"
+    );
 }
 
 #[test]
@@ -119,19 +164,22 @@ fn squeue_all_and_array_views_show_historical_and_array_jobs() {
     let runtime = TestRuntime::new();
 
     let completed_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "true"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "true",
+        ])
         .parse::<i64>()
         .expect("parse completed job id");
     let completed_state =
         runtime.wait_for_job_state(completed_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(completed_state, "COMPLETED");
 
-    let active_view = runtime.run_checked(&[
-        "squeue",
-        "--noheader",
-        "-j",
-        &completed_job_id.to_string(),
-    ]);
+    let active_view =
+        runtime.run_checked(&["squeue", "--noheader", "-j", &completed_job_id.to_string()]);
     assert!(active_view.is_empty(), "squeue:\n{active_view}");
 
     let all_view = runtime.run_checked(&[
@@ -143,7 +191,10 @@ fn squeue_all_and_array_views_show_historical_and_array_jobs() {
         "-o",
         "JobID,State",
     ]);
-    assert!(all_view.contains(&completed_job_id.to_string()), "squeue:\n{all_view}");
+    assert!(
+        all_view.contains(&completed_job_id.to_string()),
+        "squeue:\n{all_view}"
+    );
     assert!(all_view.contains("CD"), "squeue:\n{all_view}");
 
     let array_job_id = runtime
@@ -161,7 +212,8 @@ fn squeue_all_and_array_views_show_historical_and_array_jobs() {
         .expect("parse array job id");
     runtime.wait_for_condition(Duration::from_secs(5), || {
         let output = runtime.run_checked(&["squeue", "--array", "--noheader", "-o", "JobID,State"]);
-        output.contains(&format!("{array_job_id}_0")) || output.contains(&format!("{array_job_id}_1"))
+        output.contains(&format!("{array_job_id}_0"))
+            || output.contains(&format!("{array_job_id}_1"))
     });
 }
 
@@ -170,11 +222,25 @@ fn sacct_filters_formats_and_time_bounds_work() {
     let runtime = TestRuntime::new();
 
     let completed_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "true"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "true",
+        ])
         .parse::<i64>()
         .expect("parse completed job id");
     let failed_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "exit 1"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "exit 1",
+        ])
         .parse::<i64>()
         .expect("parse failed job id");
 
@@ -193,8 +259,14 @@ fn sacct_filters_formats_and_time_bounds_work() {
         "-o",
         "JobID,State,Partition",
     ]);
-    assert!(by_ids.contains(&format!("{completed_job_id}|COMPLETED|cpu")), "sacct:\n{by_ids}");
-    assert!(by_ids.contains(&format!("{failed_job_id}|FAILED|cpu")), "sacct:\n{by_ids}");
+    assert!(
+        by_ids.contains(&format!("{completed_job_id}|COMPLETED|cpu")),
+        "sacct:\n{by_ids}"
+    );
+    assert!(
+        by_ids.contains(&format!("{failed_job_id}|FAILED|cpu")),
+        "sacct:\n{by_ids}"
+    );
 
     let by_state = runtime.run_checked(&[
         "sacct",
@@ -207,8 +279,14 @@ fn sacct_filters_formats_and_time_bounds_work() {
         "-o",
         "JobID,State",
     ]);
-    assert!(by_state.contains(&format!("{completed_job_id}|COMPLETED")), "sacct:\n{by_state}");
-    assert!(!by_state.contains(&failed_job_id.to_string()), "sacct:\n{by_state}");
+    assert!(
+        by_state.contains(&format!("{completed_job_id}|COMPLETED")),
+        "sacct:\n{by_state}"
+    );
+    assert!(
+        !by_state.contains(&failed_job_id.to_string()),
+        "sacct:\n{by_state}"
+    );
 
     let by_user_partition = runtime.run_checked(&[
         "sacct",
@@ -267,12 +345,60 @@ fn sacct_shows_allocation_and_step_records() {
         String::from_utf8_lossy(&output.stderr),
     );
     let sacct = runtime.run_checked(&["sacct", "-P", "-n", "-o", "JobID,State"]);
+    assert!(sacct.contains("1|COMPLETED"), "sacct:\n{sacct}");
+    assert!(sacct.contains("1.0|COMPLETED"), "sacct:\n{sacct}");
+}
+
+#[test]
+fn sacct_supports_richer_field_combinations() {
+    let runtime = TestRuntime::new();
+
+    let job_id = runtime
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--job-name",
+            "richacct",
+            "--wrap",
+            "echo rich",
+        ])
+        .parse::<i64>()
+        .expect("parse job id");
+
+    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
+    assert_eq!(final_state, "COMPLETED");
+
+    let output = runtime.run_checked(&[
+        "sacct",
+        "-P",
+        "-n",
+        "-j",
+        &job_id.to_string(),
+        "-o",
+        "JobID,JobName,Reason,ExitCode,Elapsed,ReqMem,ReqTres,AllocTres,NodeList,Submit,Start,End,WorkDir,BatchFlag",
+    ]);
+    let line = output
+        .lines()
+        .find(|line| line.starts_with(&job_id.to_string()))
+        .expect("top-level sacct line");
+    let fields = line.split('|').collect::<Vec<_>>();
+    assert_eq!(fields[0], job_id.to_string());
+    assert_eq!(fields[1], "richacct");
+    assert_eq!(fields[2], "Completed");
+    assert_eq!(fields[3], "0:0");
+    assert!(!fields[4].is_empty(), "sacct:\n{output}");
+    assert!(fields[5].contains('M'), "sacct:\n{output}");
+    assert!(fields[6].contains("cpu="), "sacct:\n{output}");
+    assert!(fields[7].contains("cpu="), "sacct:\n{output}");
+    assert!(!fields[8].is_empty(), "sacct:\n{output}");
+    assert!(!fields[9].is_empty(), "sacct:\n{output}");
+    assert!(!fields[10].is_empty(), "sacct:\n{output}");
+    assert!(!fields[11].is_empty(), "sacct:\n{output}");
     assert!(
-        sacct.contains("1|COMPLETED"),
-        "sacct:\n{sacct}"
+        fields[12].contains(runtime.root_dir().to_str().expect("root dir")),
+        "sacct:\n{output}"
     );
-    assert!(
-        sacct.contains("1.0|COMPLETED"),
-        "sacct:\n{sacct}"
-    );
+    assert_eq!(fields[13], "1");
 }

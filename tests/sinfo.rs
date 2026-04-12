@@ -63,3 +63,23 @@ fn sinfo_long_and_node_views_render_without_headers_when_requested() {
         "sinfo -N --noheader:\n{node_view}"
     );
 }
+
+#[test]
+fn sinfo_supports_named_field_formats() {
+    let runtime = TestRuntime::with_env(&[
+        ("SLOTD_GPU_COUNT", "1"),
+        ("SLOTD_CPU_PARTITIONS", "cpu"),
+        ("SLOTD_GPU_PARTITIONS", "gpu"),
+    ]);
+
+    let output =
+        runtime.run_checked(&["sinfo", "-o", "Partition,Hostnames,State,Features,GresUsed"]);
+    assert!(output.contains("PARTITION"), "sinfo:\n{output}");
+    assert!(output.contains("HOSTNAMES"), "sinfo:\n{output}");
+    assert!(output.contains("FEATURES"), "sinfo:\n{output}");
+    assert!(output.contains("GRES_USED"), "sinfo:\n{output}");
+    assert!(
+        output.lines().any(|line| line.contains("cpu")),
+        "sinfo:\n{output}"
+    );
+}

@@ -6,6 +6,41 @@ use std::time::Duration;
 
 use helpers::TestRuntime;
 
+fn assert_signal_result(signal: &str, expected_signal_code: i32) {
+    let runtime = TestRuntime::new();
+
+    let running_job_id = runtime
+        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
+        .parse::<i64>()
+        .expect("parse running job id");
+
+    let running_state =
+        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
+    assert_eq!(running_state, "RUNNING");
+
+    let output = runtime.run_checked(&["scancel", "--signal", signal, &running_job_id.to_string()]);
+    assert_eq!(output, format!("Signaled job {running_job_id}"));
+
+    let failed_state = runtime.wait_for_job_state_in(
+        running_job_id,
+        &["FAILED", "COMPLETING"],
+        Duration::from_secs(5),
+    );
+    if failed_state == "COMPLETING" {
+        let final_state =
+            runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
+        assert_eq!(final_state, "FAILED");
+    }
+
+    let details = runtime.scontrol_show_job(running_job_id);
+    assert!(details.contains("State=FAILED"), "details:\n{details}");
+    assert!(details.contains("Reason=Signal"), "details:\n{details}");
+    assert!(
+        details.contains(&format!("ExitCode=0:{expected_signal_code}")),
+        "details:\n{details}"
+    );
+}
+
 #[test]
 fn scancel_cancels_pending_job_and_keeps_it_cancelled() {
     let runtime = TestRuntime::new();
@@ -84,72 +119,26 @@ fn scancel_cancels_running_job_via_completing() {
 
 #[test]
 fn scancel_signal_terminates_running_job_as_failed_signal() {
-    let runtime = TestRuntime::new();
-
-    let running_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
-        .parse::<i64>()
-        .expect("parse running job id");
-
-    let running_state =
-        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
-    assert_eq!(running_state, "RUNNING");
-
-    let output = runtime.run_checked(&["scancel", "--signal", "TERM", &running_job_id.to_string()]);
-    assert_eq!(output, format!("Signaled job {running_job_id}"));
-
-    let failed_state = runtime.wait_for_job_state_in(
-        running_job_id,
-        &["FAILED", "COMPLETING"],
-        Duration::from_secs(5),
-    );
-    if failed_state == "COMPLETING" {
-        let final_state =
-            runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
-        assert_eq!(final_state, "FAILED");
-    }
-
-    let details = runtime.scontrol_show_job(running_job_id);
-    assert!(details.contains("State=FAILED"), "details:\n{details}");
-    assert!(details.contains("Reason=Signal"), "details:\n{details}");
-    assert!(details.contains("ExitCode=0:15"), "details:\n{details}");
+    assert_signal_result("TERM", 15);
 }
 
 #[test]
 fn scancel_signal_int_terminates_running_job_as_failed_signal() {
-    let runtime = TestRuntime::new();
-
-    let running_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
-        .parse::<i64>()
-        .expect("parse running job id");
-
-    let running_state =
-        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
-    assert_eq!(running_state, "RUNNING");
-
-    let output = runtime.run_checked(&["scancel", "--signal", "INT", &running_job_id.to_string()]);
-    assert_eq!(output, format!("Signaled job {running_job_id}"));
-
-    let failed_state = runtime.wait_for_job_state_in(
-        running_job_id,
-        &["FAILED", "COMPLETING"],
-        Duration::from_secs(5),
-    );
-    if failed_state == "COMPLETING" {
-        let final_state =
-            runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
-        assert_eq!(final_state, "FAILED");
-    }
-
-    let details = runtime.scontrol_show_job(running_job_id);
-    assert!(details.contains("State=FAILED"), "details:\n{details}");
-    assert!(details.contains("Reason=Signal"), "details:\n{details}");
-    assert!(details.contains("ExitCode=0:2"), "details:\n{details}");
+    assert_signal_result("INT", 2);
 }
 
 #[test]
 fn scancel_signal_kill_terminates_running_job_as_failed_signal() {
+    assert_signal_result("KILL", 9);
+}
+
+#[test]
+fn scancel_signal_hup_terminates_running_job_as_failed_signal() {
+    assert_signal_result("HUP", 1);
+}
+
+#[test]
+fn scancel_signal_quit_terminates_running_job_as_failed_signal() {
     let runtime = TestRuntime::new();
 
     let running_job_id = runtime
@@ -161,24 +150,19 @@ fn scancel_signal_kill_terminates_running_job_as_failed_signal() {
         runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(running_state, "RUNNING");
 
-    let output = runtime.run_checked(&["scancel", "--signal", "KILL", &running_job_id.to_string()]);
+    let output = runtime.run_checked(&["scancel", "--signal", "QUIT", &running_job_id.to_string()]);
     assert_eq!(output, format!("Signaled job {running_job_id}"));
 
-    let failed_state = runtime.wait_for_job_state_in(
-        running_job_id,
-        &["FAILED", "COMPLETING"],
-        Duration::from_secs(5),
-    );
-    if failed_state == "COMPLETING" {
-        let final_state =
-            runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
-        assert_eq!(final_state, "FAILED");
-    }
+    let failed_state = runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
+    assert_eq!(failed_state, "FAILED");
 
     let details = runtime.scontrol_show_job(running_job_id);
     assert!(details.contains("State=FAILED"), "details:\n{details}");
-    assert!(details.contains("Reason=Signal"), "details:\n{details}");
-    assert!(details.contains("ExitCode=0:9"), "details:\n{details}");
+    assert!(
+        details.contains("Reason=NonZeroExitCode"),
+        "details:\n{details}"
+    );
+    assert!(details.contains("ExitCode=131:0"), "details:\n{details}");
 }
 
 #[test]

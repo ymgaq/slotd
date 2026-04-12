@@ -43,3 +43,29 @@ fn notify_hook_runs_for_terminal_top_level_jobs() {
     let _ = std::fs::remove_file(&notify_path);
     let _ = std::fs::remove_dir_all(&root);
 }
+
+#[test]
+fn notify_hook_failure_does_not_break_job_completion() {
+    let runtime = TestRuntime::with_env(&[("SLOTD_NOTIFY_CMD", "exit 7")]);
+
+    let job_id = runtime
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--job-name",
+            "notify-fail",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "true",
+        ])
+        .parse::<i64>()
+        .expect("parse job id");
+
+    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
+    assert_eq!(final_state, "COMPLETED");
+
+    let details = runtime.scontrol_show_job(job_id);
+    assert!(details.contains("State=COMPLETED"), "details:\n{details}");
+    assert!(details.contains("Reason=Completed"), "details:\n{details}");
+}
