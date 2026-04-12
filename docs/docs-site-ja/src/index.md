@@ -60,7 +60,7 @@
 - [`sbatch` によるバッチジョブ](sbatch.md)
 - [`srun` による対話実行](srun.md)
 - [`salloc` によるアロケーション](salloc.md)
-- [キューと会計情報](queue-and-accounting.md)
+- [キュー状態と集計情報](queue-and-accounting.md)
 - [ジョブ制御](job-control.md)
 - [ノードとパーティション表示](sinfo.md)
 - [テスト](testing.md)
