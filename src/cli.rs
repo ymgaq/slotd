@@ -1276,7 +1276,14 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         },
     )? {
         Response::Submitted { job_id } => job_id,
-        Response::Error { message } => return Err(SlotdError::from(message)),
+        Response::Error { message } => {
+            let message = if message == "resources are not currently available for --immediate salloc" {
+                "resources are not currently available for --immediate srun".to_string()
+            } else {
+                message
+            };
+            return Err(SlotdError::from(message));
+        }
         other => {
             return Err(SlotdError::from(format!(
                 "unexpected response to interactive srun: {other:?}"

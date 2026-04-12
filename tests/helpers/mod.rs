@@ -67,6 +67,10 @@ impl TestRuntime {
             .to_string()
     }
 
+    pub fn run_output(&self, args: &[&str]) -> Output {
+        self.run(args)
+    }
+
     pub fn wait_for_job_state(
         &self,
         job_id: i64,
