@@ -8,7 +8,6 @@ use std::thread;
 use std::time::Duration;
 
 use nix::errno::Errno;
-use nix::sched::{CpuSet, sched_setaffinity};
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, setsid};
 
@@ -16,6 +15,7 @@ use crate::app::config::AppConfig;
 use crate::app::error::Result;
 use crate::model::job::{JobRecord, JobState, OpenMode};
 use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
+use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
 use crate::runtime::notify::notify_job;
 use crate::runtime::slurm_env::apply_slurm_env;
@@ -448,64 +448,6 @@ fn open_output_file(path: &str, open_mode: OpenMode) -> Result<File> {
         }
     }
     Ok(options.open(path)?)
-}
-
-fn resolve_cpu_bind_ids(
-    value: Option<&str>,
-    total_cpus: u32,
-    requested_cpus: u32,
-) -> Result<Option<Vec<usize>>> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let normalized = value.to_ascii_lowercase();
-    if normalized == "none" {
-        return Ok(None);
-    }
-    if normalized == "cores" {
-        let limit = requested_cpus.min(total_cpus).max(1);
-        return Ok(Some((0..limit as usize).collect()));
-    }
-    if let Some(list) = normalized.strip_prefix("map_cpu:") {
-        let mut cpus = Vec::new();
-        for part in list
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-        {
-            let cpu = part.parse::<usize>().map_err(|_| {
-                crate::app::error::SlotdError::from(format!("invalid cpu-bind cpu id: {part}"))
-            })?;
-            if cpu >= total_cpus as usize {
-                return Err(crate::app::error::SlotdError::from(format!(
-                    "cpu-bind cpu id {cpu} exceeds available CPUs"
-                )));
-            }
-            cpus.push(cpu);
-        }
-        if cpus.is_empty() {
-            return Err(crate::app::error::SlotdError::from(
-                "cpu-bind map_cpu requires at least one CPU id",
-            ));
-        }
-        cpus.sort_unstable();
-        cpus.dedup();
-        return Ok(Some(cpus));
-    }
-    Err(crate::app::error::SlotdError::from(format!(
-        "unsupported cpu-bind value: {value}; supported: none, cores, map_cpu:<ids>"
-    )))
-}
-
-fn apply_cpu_affinity(cpu_ids: &[usize]) -> Result<()> {
-    let mut cpu_set = CpuSet::new();
-    for &cpu_id in cpu_ids {
-        cpu_set
-            .set(cpu_id)
-            .map_err(|error| crate::app::error::SlotdError::from(error.to_string()))?;
-    }
-    sched_setaffinity(Pid::from_raw(0), &cpu_set)
-        .map_err(|error| crate::app::error::SlotdError::from(error.to_string()))
 }
 
 fn job_status_path(job: &JobRecord) -> Option<PathBuf> {

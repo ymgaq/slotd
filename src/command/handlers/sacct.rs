@@ -1,6 +1,7 @@
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
-use crate::command::cli::{SacctArgs, parse_states};
+use crate::command::args::SacctArgs;
+use crate::command::helpers::parse_states;
 use crate::format::{parse_sacct_fields, print_sacct_jobs, print_sacct_jobs_delimited};
 use crate::proto::ipc::{Request, Response, send_request};
 use crate::util::time::parse_time_filter;

@@ -1,6 +1,7 @@
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
-use crate::command::cli::{SinfoArgs, build_sinfo_node_rows, filter_partitions};
+use crate::command::args::SinfoArgs;
+use crate::command::helpers::{build_sinfo_node_rows, filter_partitions};
 use crate::format::{parse_sinfo_fields, print_sinfo, print_sinfo_nodes};
 use crate::proto::ipc::{Request, Response, send_request};
 

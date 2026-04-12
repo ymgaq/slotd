@@ -1,6 +1,7 @@
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
-use crate::command::cli::{ScontrolArgs, load_job, print_scontrol_job, validate_constraint};
+use crate::command::args::ScontrolArgs;
+use crate::command::helpers::{load_job, print_scontrol_job, validate_constraint};
 use crate::proto::ipc::{Request, Response, send_request};
 use crate::submit::sbatch::parse_time_limit_secs;
 

@@ -1,6 +1,7 @@
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
-use crate::command::cli::{ScancelArgs, resolve_job_reference};
+use crate::command::args::ScancelArgs;
+use crate::command::helpers::resolve_job_reference;
 use crate::proto::ipc::{Request, Response, send_request};
 use crate::util::signals::parse_signal_name;
 

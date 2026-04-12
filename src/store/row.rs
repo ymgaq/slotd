@@ -2,13 +2,13 @@ use crate::app::error::SlotdError;
 use crate::model::job::{JobRecord, WarningSignal};
 use crate::store::support::{parse_export_env_json, parse_gpu_ids};
 
-pub(super) const JOB_SELECT_COLUMNS: &str = "id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
+pub(crate) const JOB_SELECT_COLUMNS: &str = "id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
                     array_task_id, array_task_count, array_task_limit, max_rss_kb,
                     submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
                     assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count";
 
-pub(super) fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
+pub(crate) fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
     let state_text: String = row.get(7)?;
     let state = state_text.parse().map_err(|message: String| {
         rusqlite::Error::FromSqlConversionFailure(

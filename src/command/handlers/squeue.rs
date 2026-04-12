@@ -1,6 +1,7 @@
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
-use crate::command::cli::{SqueueArgs, estimate_start_times, parse_states, sort_squeue_jobs};
+use crate::command::args::SqueueArgs;
+use crate::command::helpers::{estimate_start_times, parse_states, sort_squeue_jobs};
 use crate::format::{
     SqueueField, parse_squeue_fields, print_squeue_jobs, print_squeue_jobs_with_options,
     print_squeue_jobs_with_start_times,
