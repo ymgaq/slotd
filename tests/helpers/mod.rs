@@ -70,6 +70,31 @@ impl TestRuntime {
         self.run(args)
     }
 
+    pub fn submit_batch(&self, args: &[&str]) -> i64 {
+        self.run_checked(args)
+            .parse::<i64>()
+            .expect("parse job id")
+    }
+
+    pub fn submit_pending_afterok(&self, blocker_partition: &str, args: &[&str]) -> (i64, i64) {
+        let blocker_job_id = self.submit_batch(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            blocker_partition,
+            "--wrap",
+            "sleep 2",
+        ]);
+        let dependency = format!("afterok:{blocker_job_id}");
+        let mut command = vec!["sbatch", "--parsable", "--dependency", &dependency];
+        command.extend_from_slice(args);
+        let job_id = self.submit_batch(&command);
+
+        self.wait_for_job_state(job_id, "PENDING", Duration::from_secs(2));
+
+        (blocker_job_id, job_id)
+    }
+
     pub fn wait_for_job_state(
         &self,
         job_id: i64,
@@ -128,6 +153,13 @@ impl TestRuntime {
 
     pub fn scontrol_show_job(&self, job_id: i64) -> String {
         self.run_checked(&["scontrol", "show", "job", &job_id.to_string()])
+    }
+
+    pub fn assert_job_details_contains(&self, job_id: i64, expected: &[&str]) {
+        let details = self.scontrol_show_job(job_id);
+        for needle in expected {
+            assert!(details.contains(needle), "details:\n{details}");
+        }
     }
 
     pub fn sacct_lines(&self, fields: &str) -> Vec<String> {

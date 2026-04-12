@@ -9,14 +9,8 @@ use helpers::TestRuntime;
 fn assert_signal_result(signal: &str, expected_signal_code: i32) {
     let runtime = TestRuntime::new();
 
-    let running_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
-        .parse::<i64>()
-        .expect("parse running job id");
-
-    let running_state =
-        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
-    assert_eq!(running_state, "RUNNING");
+    let running_job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "sleep 10"]);
+    runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
 
     let output = runtime.run_checked(&["scancel", "--signal", signal, &running_job_id.to_string()]);
     assert_eq!(output, format!("Signaled job {running_job_id}"));
@@ -32,50 +26,33 @@ fn assert_signal_result(signal: &str, expected_signal_code: i32) {
         assert_eq!(final_state, "FAILED");
     }
 
-    let details = runtime.scontrol_show_job(running_job_id);
-    assert!(details.contains("State=FAILED"), "details:\n{details}");
-    assert!(details.contains("Reason=Signal"), "details:\n{details}");
-    assert!(
-        details.contains(&format!("ExitCode=0:{expected_signal_code}")),
-        "details:\n{details}"
-    );
+    let exit_code = format!("ExitCode=0:{expected_signal_code}");
+    runtime.assert_job_details_contains(running_job_id, &["State=FAILED", "Reason=Signal", &exit_code]);
 }
 
 #[test]
 fn scancel_cancels_pending_job_and_keeps_it_cancelled() {
     let runtime = TestRuntime::new();
 
-    let blocker_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 2"])
-        .parse::<i64>()
-        .expect("parse blocker job id");
+    let blocker_job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "sleep 2"]);
     let dependency = format!("afterok:{blocker_job_id}");
-    let pending_job_id = runtime
-        .run_checked(&[
-            "sbatch",
-            "--parsable",
-            "--dependency",
-            &dependency,
-            "--wrap",
-            "sleep 1",
-        ])
-        .parse::<i64>()
-        .expect("parse pending job id");
+    let pending_job_id = runtime.submit_batch(&[
+        "sbatch",
+        "--parsable",
+        "--dependency",
+        &dependency,
+        "--wrap",
+        "sleep 1",
+    ]);
 
-    let state = runtime.wait_for_job_state(pending_job_id, "PENDING", Duration::from_secs(2));
-    assert_eq!(state, "PENDING");
+    runtime.wait_for_job_state(pending_job_id, "PENDING", Duration::from_secs(2));
     runtime.assert_job_state_stable(pending_job_id, "PENDING", Duration::from_millis(500));
 
     let output = runtime.run_checked(&["scancel", &pending_job_id.to_string()]);
     assert_eq!(output, format!("Cancelled job {pending_job_id}"));
 
-    let cancelled_state =
-        runtime.wait_for_job_state(pending_job_id, "CANCELLED", Duration::from_secs(5));
-    assert_eq!(cancelled_state, "CANCELLED");
-
-    let blocker_state =
-        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(blocker_state, "COMPLETED");
+    runtime.wait_for_job_state(pending_job_id, "CANCELLED", Duration::from_secs(5));
+    runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
     runtime.assert_job_state_stable(pending_job_id, "CANCELLED", Duration::from_millis(300));
 }
 
@@ -83,14 +60,8 @@ fn scancel_cancels_pending_job_and_keeps_it_cancelled() {
 fn scancel_cancels_running_job_via_completing() {
     let runtime = TestRuntime::new();
 
-    let running_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
-        .parse::<i64>()
-        .expect("parse running job id");
-
-    let running_state =
-        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
-    assert_eq!(running_state, "RUNNING");
+    let running_job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "sleep 10"]);
+    runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
 
     let output = runtime.run_checked(&["scancel", &running_job_id.to_string()]);
     assert_eq!(output, format!("Cancelled job {running_job_id}"));
@@ -105,15 +76,10 @@ fn scancel_cancels_running_job_via_completing() {
         "unexpected transition state: {transition_state}"
     );
 
-    let cancelled_state =
-        runtime.wait_for_job_state(running_job_id, "CANCELLED", Duration::from_secs(5));
-    assert_eq!(cancelled_state, "CANCELLED");
-
-    let details = runtime.scontrol_show_job(running_job_id);
-    assert!(details.contains("State=CANCELLED"), "details:\n{details}");
-    assert!(
-        details.contains("Reason=CancelledByUser"),
-        "details:\n{details}"
+    runtime.wait_for_job_state(running_job_id, "CANCELLED", Duration::from_secs(5));
+    runtime.assert_job_details_contains(
+        running_job_id,
+        &["State=CANCELLED", "Reason=CancelledByUser"],
     );
 }
 
@@ -141,28 +107,17 @@ fn scancel_signal_hup_terminates_running_job_as_failed_signal() {
 fn scancel_signal_quit_terminates_running_job_as_failed_signal() {
     let runtime = TestRuntime::new();
 
-    let running_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
-        .parse::<i64>()
-        .expect("parse running job id");
-
-    let running_state =
-        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
-    assert_eq!(running_state, "RUNNING");
+    let running_job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "sleep 10"]);
+    runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
 
     let output = runtime.run_checked(&["scancel", "--signal", "QUIT", &running_job_id.to_string()]);
     assert_eq!(output, format!("Signaled job {running_job_id}"));
 
-    let failed_state = runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
-    assert_eq!(failed_state, "FAILED");
-
-    let details = runtime.scontrol_show_job(running_job_id);
-    assert!(details.contains("State=FAILED"), "details:\n{details}");
-    assert!(
-        details.contains("Reason=NonZeroExitCode"),
-        "details:\n{details}"
+    runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
+    runtime.assert_job_details_contains(
+        running_job_id,
+        &["State=FAILED", "Reason=NonZeroExitCode", "ExitCode=131:0"],
     );
-    assert!(details.contains("ExitCode=131:0"), "details:\n{details}");
 }
 
 #[test]

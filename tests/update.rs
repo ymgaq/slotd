@@ -4,37 +4,11 @@ use std::time::Duration;
 
 use helpers::TestRuntime;
 
-fn submit_pending_job(runtime: &TestRuntime, blocker_partition: &str, args: &[&str]) -> (i64, i64) {
-    let blocker_job_id = runtime
-        .run_checked(&[
-            "sbatch",
-            "--parsable",
-            "--partition",
-            blocker_partition,
-            "--wrap",
-            "sleep 2",
-        ])
-        .parse::<i64>()
-        .expect("parse blocker job id");
-    let dependency = format!("afterok:{blocker_job_id}");
-    let mut command = vec!["sbatch", "--parsable", "--dependency", &dependency];
-    command.extend_from_slice(args);
-    let job_id = runtime
-        .run_checked(&command)
-        .parse::<i64>()
-        .expect("parse job id");
-
-    let pending_state = runtime.wait_for_job_state(job_id, "PENDING", Duration::from_secs(2));
-    assert_eq!(pending_state, "PENDING");
-
-    (blocker_job_id, job_id)
-}
-
 #[test]
 fn scontrol_update_changes_pending_job_fields() {
     let runtime = TestRuntime::new();
 
-    let (blocker_job_id, job_id) = submit_pending_job(&runtime, "cpu", &["--wrap", "true"]);
+    let (blocker_job_id, job_id) = runtime.submit_pending_afterok("cpu", &["--wrap", "true"]);
 
     let output = runtime.run_checked(&[
         "scontrol",
@@ -46,23 +20,13 @@ fn scontrol_update_changes_pending_job_fields() {
     ]);
     assert!(output.is_empty(), "stdout:\n{output}");
 
-    let details = runtime.scontrol_show_job(job_id);
-    assert!(
-        details.contains("JobName=updated-name"),
-        "details:\n{details}"
+    runtime.assert_job_details_contains(
+        job_id,
+        &["JobName=updated-name", "TimeLimit=00:00:05", "State=PENDING"],
     );
-    assert!(
-        details.contains("TimeLimit=00:00:05"),
-        "details:\n{details}"
-    );
-    assert!(details.contains("State=PENDING"), "details:\n{details}");
 
-    let blocker_state =
-        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(blocker_state, "COMPLETED");
-
-    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(final_state, "COMPLETED");
+    runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
+    runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
 }
 
 #[test]
@@ -74,7 +38,7 @@ fn scontrol_update_changes_pending_partition_and_queue_view() {
     ]);
 
     let (blocker_job_id, job_id) =
-        submit_pending_job(&runtime, "cpu", &["--partition", "cpu", "--wrap", "true"]);
+        runtime.submit_pending_afterok("cpu", &["--partition", "cpu", "--wrap", "true"]);
 
     let output = runtime.run_checked(&[
         "scontrol",
@@ -85,8 +49,7 @@ fn scontrol_update_changes_pending_partition_and_queue_view() {
     ]);
     assert!(output.is_empty(), "stdout:\n{output}");
 
-    let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains("Partition=gpu"), "details:\n{details}");
+    runtime.assert_job_details_contains(job_id, &["Partition=gpu"]);
 
     let queue = runtime.run_checked(&[
         "squeue",
@@ -98,66 +61,46 @@ fn scontrol_update_changes_pending_partition_and_queue_view() {
     ]);
     assert_eq!(queue.trim(), "gpu", "squeue:\n{queue}");
 
-    let blocker_state =
-        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(blocker_state, "COMPLETED");
-    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(final_state, "COMPLETED");
+    runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
+    runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
 }
 
 #[test]
 fn scontrol_update_priority_changes_pending_schedule_order() {
     let runtime = TestRuntime::new();
 
-    let blocker_job_id = runtime
-        .run_checked(&[
-            "sbatch",
-            "--parsable",
-            "--partition",
-            "cpu",
-            "--exclusive",
-            "--wrap",
-            "sleep 2",
-        ])
-        .parse::<i64>()
-        .expect("parse blocker job id");
-    let blocker_state =
-        runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
-    assert_eq!(blocker_state, "RUNNING");
+    let blocker_job_id = runtime.submit_batch(&[
+        "sbatch",
+        "--parsable",
+        "--partition",
+        "cpu",
+        "--exclusive",
+        "--wrap",
+        "sleep 2",
+    ]);
+    runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
 
-    let first_job_id = runtime
-        .run_checked(&[
-            "sbatch",
-            "--parsable",
-            "--partition",
-            "cpu",
-            "--exclusive",
-            "--wrap",
-            "sleep 1",
-        ])
-        .parse::<i64>()
-        .expect("parse first job id");
-    let second_job_id = runtime
-        .run_checked(&[
-            "sbatch",
-            "--parsable",
-            "--partition",
-            "cpu",
-            "--exclusive",
-            "--wrap",
-            "sleep 1",
-        ])
-        .parse::<i64>()
-        .expect("parse second job id");
+    let first_job_id = runtime.submit_batch(&[
+        "sbatch",
+        "--parsable",
+        "--partition",
+        "cpu",
+        "--exclusive",
+        "--wrap",
+        "sleep 1",
+    ]);
+    let second_job_id = runtime.submit_batch(&[
+        "sbatch",
+        "--parsable",
+        "--partition",
+        "cpu",
+        "--exclusive",
+        "--wrap",
+        "sleep 1",
+    ]);
 
-    assert_eq!(
-        runtime.wait_for_job_state(first_job_id, "PENDING", Duration::from_secs(2)),
-        "PENDING"
-    );
-    assert_eq!(
-        runtime.wait_for_job_state(second_job_id, "PENDING", Duration::from_secs(2)),
-        "PENDING"
-    );
+    runtime.wait_for_job_state(first_job_id, "PENDING", Duration::from_secs(2));
+    runtime.wait_for_job_state(second_job_id, "PENDING", Duration::from_secs(2));
 
     let output = runtime.run_checked(&[
         "scontrol",
@@ -168,9 +111,7 @@ fn scontrol_update_priority_changes_pending_schedule_order() {
     ]);
     assert!(output.is_empty(), "stdout:\n{output}");
 
-    let blocker_final =
-        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(blocker_final, "COMPLETED");
+    runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
 
     let running_job = runtime.wait_for_job_state_in(
         second_job_id,
@@ -180,12 +121,8 @@ fn scontrol_update_priority_changes_pending_schedule_order() {
     assert!(matches!(running_job.as_str(), "RUNNING" | "COMPLETED"));
     runtime.assert_job_state_stable(first_job_id, "PENDING", Duration::from_millis(500));
 
-    let second_final =
-        runtime.wait_for_job_state(second_job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(second_final, "COMPLETED");
-    let first_final =
-        runtime.wait_for_job_state(first_job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(first_final, "COMPLETED");
+    runtime.wait_for_job_state(second_job_id, "COMPLETED", Duration::from_secs(10));
+    runtime.wait_for_job_state(first_job_id, "COMPLETED", Duration::from_secs(10));
 }
 
 #[test]
@@ -196,8 +133,7 @@ fn scontrol_update_rejects_partition_change_when_constraint_no_longer_matches() 
         ("SLOTD_GPU_PARTITIONS", "beta"),
     ]);
 
-    let (_blocker_job_id, job_id) = submit_pending_job(
-        &runtime,
+    let (_blocker_job_id, job_id) = runtime.submit_pending_afterok(
         "alpha",
         &[
             "--partition",
@@ -229,13 +165,8 @@ fn scontrol_update_rejects_partition_change_when_constraint_no_longer_matches() 
 fn scontrol_update_rejects_job_name_change_after_completion() {
     let runtime = TestRuntime::new();
 
-    let job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
-        .parse::<i64>()
-        .expect("parse job id");
-
-    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(final_state, "COMPLETED");
+    let job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "true"]);
+    runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
 
     let output = runtime.run_output(&[
         "scontrol",
@@ -262,13 +193,8 @@ fn scontrol_update_rejects_job_name_change_after_completion() {
 fn scontrol_update_rejects_priority_change_after_completion() {
     let runtime = TestRuntime::new();
 
-    let job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
-        .parse::<i64>()
-        .expect("parse job id");
-
-    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(final_state, "COMPLETED");
+    let job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "true"]);
+    runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
 
     let output = runtime.run_output(&[
         "scontrol",
@@ -290,13 +216,8 @@ fn scontrol_update_rejects_priority_change_after_completion() {
 fn scontrol_update_rejects_partition_change_after_completion() {
     let runtime = TestRuntime::new();
 
-    let job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
-        .parse::<i64>()
-        .expect("parse job id");
-
-    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(final_state, "COMPLETED");
+    let job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "true"]);
+    runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
 
     let output = runtime.run_output(&[
         "scontrol",
@@ -318,13 +239,8 @@ fn scontrol_update_rejects_partition_change_after_completion() {
 fn scontrol_update_rejects_time_limit_change_after_completion() {
     let runtime = TestRuntime::new();
 
-    let job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
-        .parse::<i64>()
-        .expect("parse job id");
-
-    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
-    assert_eq!(final_state, "COMPLETED");
+    let job_id = runtime.submit_batch(&["sbatch", "--parsable", "--wrap", "true"]);
+    runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
 
     let output = runtime.run_output(&[
         "scontrol",
