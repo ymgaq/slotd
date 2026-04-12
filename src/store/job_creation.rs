@@ -1,11 +1,10 @@
-use std::path::PathBuf;
-
 use rusqlite::params;
 
 use crate::app::error::{Result, SlotdError};
 use crate::model::job::{JobState, SubmitRequest};
-use crate::store::support::{default_name, ensure_parent_dir, path_string, script_command};
-use crate::submit::sbatch::{expand_output_pattern, parse_array_spec, resolve_log_path};
+use crate::store::job_paths::prepare_job_paths;
+use crate::store::support::{default_name, script_command};
+use crate::submit::sbatch::parse_array_spec;
 use crate::util::time::now_ts;
 
 use super::{Store, default_output_pattern};
@@ -84,7 +83,7 @@ impl Store {
                 Option::<i64>::None,
                 false,
                 0i32,
-                resolved_name,
+                &resolved_name,
                 user_name,
                 JobState::Pending.as_str(),
                 &request.partition,
@@ -123,64 +122,25 @@ impl Store {
         )?;
 
         let job_id = self.conn.last_insert_rowid();
-        let job_dir = self.config.jobs_dir.join(job_id.to_string());
-        std::fs::create_dir_all(&job_dir)?;
-
-        let script_path = job_dir.join("script.sh");
-        std::fs::write(&script_path, &request.script_body)?;
-
-        let default_stdout = expand_output_pattern(
-            default_output_pattern(array_task_id),
-            job_id,
+        let default_stdout = default_output_pattern(array_task_id);
+        let paths = prepare_job_paths(
+            &self.config,
+            request,
+            default_stdout,
             &resolved_name,
-            &user_name,
-            &self.config.hostname,
+            job_id,
             array_job_id,
             array_task_id,
-        );
-        let stdout_path = request
-            .stdout_path
-            .as_deref()
-            .map(|path| {
-                expand_output_pattern(
-                    path,
-                    job_id,
-                    &resolved_name,
-                    &user_name,
-                    &self.config.hostname,
-                    array_job_id,
-                    array_task_id,
-                )
-            })
-            .unwrap_or(default_stdout);
-        let stdout_path = PathBuf::from(resolve_log_path(&request.cwd, &stdout_path));
-        let stderr_path = request
-            .stderr_path
-            .as_deref()
-            .map(|path| {
-                expand_output_pattern(
-                    path,
-                    job_id,
-                    &resolved_name,
-                    &user_name,
-                    &self.config.hostname,
-                    array_job_id,
-                    array_task_id,
-                )
-            })
-            .map(|path| PathBuf::from(resolve_log_path(&request.cwd, &path)))
-            .unwrap_or_else(|| stdout_path.clone());
-        ensure_parent_dir(&stdout_path)?;
-        ensure_parent_dir(&stderr_path)?;
+        )?;
 
         self.conn.execute(
             "UPDATE jobs
              SET script_path = ?1, stdout_path = ?2, stderr_path = ?3
              WHERE id = ?4",
             params![
-                path_string(&script_path),
-                path_string(&stdout_path),
-                path_string(&stderr_path),
+                paths.script_path_string(),
+                paths.stdout_path_string(),
+                paths.stderr_path_string(),
                 job_id
             ],
         )?;

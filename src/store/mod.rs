@@ -1,10 +1,12 @@
 mod allocation;
 mod control_updates;
 mod job_creation;
+mod job_paths;
 mod listing;
 mod lookup;
 mod node_reporting;
 mod partition_reporting;
+mod partition_stats;
 mod query;
 mod row;
 mod schema;

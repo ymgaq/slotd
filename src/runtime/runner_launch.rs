@@ -1,16 +1,12 @@
 use std::fs::File;
 use std::fs::OpenOptions;
-use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use nix::unistd::setsid;
-
 use crate::app::error::Result;
 use crate::model::job::{JobRecord, OpenMode};
-use crate::runtime::cgroup::setup_job_cgroup;
-use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
+use crate::runtime::launch_support::{configure_detached_launch, setup_job_cgroup_for_launch};
 use crate::runtime::slurm_env::apply_slurm_env;
 use crate::store::Store;
 use crate::store::support::join_gpu_ids;
@@ -64,40 +60,19 @@ pub(crate) fn launch_running_job(store: &Store, job: &JobRecord) -> Result<Runni
     if !assigned_gpu_ids.is_empty() {
         command.env("CUDA_VISIBLE_DEVICES", join_gpu_ids(&assigned_gpu_ids));
     }
-    let cpu_bind = resolve_cpu_bind_ids(
+    configure_detached_launch(
+        &mut command,
         job.cpu_bind.as_deref(),
         store.config().total_cpus,
         job.requested_cpus
             .saturating_mul(job.requested_tasks)
             .max(1),
     )?;
-    unsafe {
-        command.pre_exec(|| {
-            setsid().map_err(std::io::Error::other)?;
-            Ok(())
-        });
-    }
-    if let Some(cpu_ids) = cpu_bind {
-        unsafe {
-            command.pre_exec(move || {
-                apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
-                Ok(())
-            });
-        }
-    }
 
     let child = command.spawn()?;
     let pid = child.id() as i32;
     let pgid = pid;
-    let cgroup_path = setup_job_cgroup(
-        store.config().cgroup_base.as_deref(),
-        job.id,
-        job.requested_memory_mb,
-        job.requested_cpus,
-        job.requested_tasks,
-        store.config().total_cpus,
-        pid,
-    )?;
+    let cgroup_path = setup_job_cgroup_for_launch(store.config(), job.id, job, pid)?;
     store.mark_running(job.id, pid, pgid, &assigned_gpu_ids)?;
 
     Ok(RunningJob {

@@ -1,14 +1,12 @@
-use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
 use crate::app::config::AppConfig;
 use crate::app::error::Result;
 use crate::model::job::JobRecord;
-use crate::runtime::cgroup::setup_job_cgroup;
-use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::runtime::foreground::ForegroundExecutionOptions;
 use crate::runtime::foreground_io::{ForegroundIoState, configure_foreground_stdio};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
+use crate::runtime::launch_support::{configure_detached_launch, setup_job_cgroup_for_launch};
 use crate::runtime::slurm_env::apply_slurm_env;
 
 pub(crate) struct ForegroundLaunch {
@@ -42,27 +40,14 @@ pub(crate) fn launch_foreground_command(
         options.io.unbuffered,
     )?;
     apply_slurm_env(&mut command_builder, config, job);
-    let cpu_ids = resolve_cpu_bind_ids(
+    configure_detached_launch(
+        &mut command_builder,
         options.cpu_bind.or(job.cpu_bind.as_deref()),
         config.total_cpus,
         job.requested_cpus
             .saturating_mul(job.requested_tasks)
             .max(1),
     )?;
-    unsafe {
-        command_builder.pre_exec(|| {
-            nix::unistd::setsid().map_err(std::io::Error::other)?;
-            Ok(())
-        });
-    }
-    if let Some(cpu_ids) = cpu_ids {
-        unsafe {
-            command_builder.pre_exec(move || {
-                apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
-                Ok(())
-            });
-        }
-    }
     let child = command_builder.spawn()?;
     let pid = child.id() as i32;
     Ok(ForegroundLaunch {
@@ -79,13 +64,5 @@ pub(crate) fn setup_local_cgroup(
     job: &JobRecord,
     pid: i32,
 ) -> Result<Option<std::path::PathBuf>> {
-    setup_job_cgroup(
-        config.cgroup_base.as_deref(),
-        job_id,
-        job.requested_memory_mb,
-        job.requested_cpus,
-        job.requested_tasks,
-        config.total_cpus,
-        pid,
-    )
+    setup_job_cgroup_for_launch(config, job_id, job, pid)
 }
