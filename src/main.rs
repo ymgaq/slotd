@@ -5,6 +5,7 @@ mod cpu;
 mod daemon;
 mod env;
 mod error;
+mod foreground;
 mod ipc;
 mod job;
 mod job_display;
