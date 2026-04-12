@@ -1,5 +1,7 @@
 mod helpers;
 
+use std::fs;
+use std::process::Stdio;
 use std::time::Duration;
 
 use helpers::TestRuntime;
@@ -51,7 +53,8 @@ fn scancel_cancels_running_job_via_completing() {
         .parse::<i64>()
         .expect("parse running job id");
 
-    let running_state = runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
+    let running_state =
+        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(running_state, "RUNNING");
 
     let output = runtime.run_checked(&["scancel", &running_job_id.to_string()]);
@@ -73,7 +76,10 @@ fn scancel_cancels_running_job_via_completing() {
 
     let details = runtime.scontrol_show_job(running_job_id);
     assert!(details.contains("State=CANCELLED"), "details:\n{details}");
-    assert!(details.contains("Reason=CancelledByUser"), "details:\n{details}");
+    assert!(
+        details.contains("Reason=CancelledByUser"),
+        "details:\n{details}"
+    );
 }
 
 #[test]
@@ -85,7 +91,8 @@ fn scancel_signal_terminates_running_job_as_failed_signal() {
         .parse::<i64>()
         .expect("parse running job id");
 
-    let running_state = runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
+    let running_state =
+        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(running_state, "RUNNING");
 
     let output = runtime.run_checked(&["scancel", "--signal", "TERM", &running_job_id.to_string()]);
@@ -106,4 +113,153 @@ fn scancel_signal_terminates_running_job_as_failed_signal() {
     assert!(details.contains("State=FAILED"), "details:\n{details}");
     assert!(details.contains("Reason=Signal"), "details:\n{details}");
     assert!(details.contains("ExitCode=0:15"), "details:\n{details}");
+}
+
+#[test]
+fn scancel_signal_int_terminates_running_job_as_failed_signal() {
+    let runtime = TestRuntime::new();
+
+    let running_job_id = runtime
+        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
+        .parse::<i64>()
+        .expect("parse running job id");
+
+    let running_state =
+        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
+    assert_eq!(running_state, "RUNNING");
+
+    let output = runtime.run_checked(&["scancel", "--signal", "INT", &running_job_id.to_string()]);
+    assert_eq!(output, format!("Signaled job {running_job_id}"));
+
+    let failed_state = runtime.wait_for_job_state_in(
+        running_job_id,
+        &["FAILED", "COMPLETING"],
+        Duration::from_secs(5),
+    );
+    if failed_state == "COMPLETING" {
+        let final_state =
+            runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
+        assert_eq!(final_state, "FAILED");
+    }
+
+    let details = runtime.scontrol_show_job(running_job_id);
+    assert!(details.contains("State=FAILED"), "details:\n{details}");
+    assert!(details.contains("Reason=Signal"), "details:\n{details}");
+    assert!(details.contains("ExitCode=0:2"), "details:\n{details}");
+}
+
+#[test]
+fn scancel_signal_kill_terminates_running_job_as_failed_signal() {
+    let runtime = TestRuntime::new();
+
+    let running_job_id = runtime
+        .run_checked(&["sbatch", "--parsable", "--wrap", "sleep 10"])
+        .parse::<i64>()
+        .expect("parse running job id");
+
+    let running_state =
+        runtime.wait_for_job_state(running_job_id, "RUNNING", Duration::from_secs(5));
+    assert_eq!(running_state, "RUNNING");
+
+    let output = runtime.run_checked(&["scancel", "--signal", "KILL", &running_job_id.to_string()]);
+    assert_eq!(output, format!("Signaled job {running_job_id}"));
+
+    let failed_state = runtime.wait_for_job_state_in(
+        running_job_id,
+        &["FAILED", "COMPLETING"],
+        Duration::from_secs(5),
+    );
+    if failed_state == "COMPLETING" {
+        let final_state =
+            runtime.wait_for_job_state(running_job_id, "FAILED", Duration::from_secs(5));
+        assert_eq!(final_state, "FAILED");
+    }
+
+    let details = runtime.scontrol_show_job(running_job_id);
+    assert!(details.contains("State=FAILED"), "details:\n{details}");
+    assert!(details.contains("Reason=Signal"), "details:\n{details}");
+    assert!(details.contains("ExitCode=0:9"), "details:\n{details}");
+}
+
+#[test]
+fn scancel_step_reference_terminates_the_target_step() {
+    let runtime = TestRuntime::new();
+    let alloc_id_path = runtime.root_dir().join("alloc-job-id.txt");
+    let step_started_path = runtime.root_dir().join("step-started.txt");
+    let step_exit_path = runtime.root_dir().join("step-exit.txt");
+    let finished_path = runtime.root_dir().join("allocation-finished.txt");
+    let script_path = runtime.root_dir().join("nested-step-cancel.sh");
+
+    fs::write(
+        &script_path,
+        format!(
+            r#"#!/usr/bin/env bash
+printf '%s' "$SLURM_JOB_ID" > "{alloc_id}"
+set +e
+SLOTD_ROOT="{slotd_root}" USER="slotd-test" "{slotd_bin}" srun bash -lc 'echo started > "{step_started}"; sleep 20'
+printf '%s' "$?" > "{step_exit}"
+printf done > "{finished}"
+"#,
+            alloc_id = alloc_id_path.display(),
+            slotd_root = runtime.root_dir().display(),
+            slotd_bin = env!("CARGO_BIN_EXE_slotd"),
+            step_started = step_started_path.display(),
+            step_exit = step_exit_path.display(),
+            finished = finished_path.display(),
+        ),
+    )
+    .expect("write nested step cancel script");
+
+    let mut child = runtime
+        .command()
+        .args([
+            "salloc",
+            "-p",
+            "cpu",
+            "bash",
+            script_path.to_str().expect("script path"),
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("spawn salloc");
+
+    runtime.wait_for_condition(Duration::from_secs(10), || alloc_id_path.exists());
+    let allocation_job_id = fs::read_to_string(&alloc_id_path)
+        .expect("read allocation id")
+        .trim()
+        .parse::<i64>()
+        .expect("parse allocation id");
+
+    let step_reference = format!("{allocation_job_id}.0");
+    runtime.wait_for_condition(Duration::from_secs(10), || step_started_path.exists());
+
+    let output = runtime.run_checked(&["scancel", &step_reference]);
+    assert!(!output.is_empty(), "missing scancel output");
+
+    runtime.wait_for_condition(Duration::from_secs(10), || step_exit_path.exists());
+    let status = child.wait().expect("wait for salloc");
+    assert!(status.success(), "salloc exited with status {status}");
+    assert!(finished_path.exists(), "allocation script did not finish");
+
+    let step_exit = fs::read_to_string(&step_exit_path).expect("read step exit");
+    assert_ne!(step_exit.trim(), "0", "step exit unexpectedly succeeded");
+
+    let allocation_final = runtime.wait_for_job_state_in(
+        allocation_job_id,
+        &["FAILED", "COMPLETED"],
+        Duration::from_secs(10),
+    );
+    assert!(
+        matches!(allocation_final.as_str(), "FAILED" | "COMPLETED"),
+        "unexpected allocation state: {allocation_final}"
+    );
+    let sacct = runtime.run_checked(&["sacct", "-P", "-n", "-o", "JobID,State"]);
+    assert!(
+        sacct
+            .lines()
+            .any(|line| line.trim() == format!("{allocation_job_id}.0|FAILED")),
+        "sacct:\n{sacct}"
+    );
 }
