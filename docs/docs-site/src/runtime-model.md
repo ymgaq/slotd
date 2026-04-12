@@ -23,6 +23,7 @@ Current behavior:
 
 - CPU reservation is `ntasks * cpus-per-task`
 - `ntasks` launches one local process per task rank for batch and foreground execution
+- total memory defaults to host-detected `MemTotal` from `/proc/meminfo`, with a `16384 MB` fallback
 - memory is stored in MB
 - GPUs are integer slots
 - admission is reservation-based, not usage-based

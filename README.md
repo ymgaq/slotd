@@ -48,6 +48,7 @@ The implementation is intentionally Rust-first:
 - local daemon and Unix socket IPC
 - SQLite-backed durable job state
 - CPU, memory, and GPU reservation-based scheduling
+- host-detected CPU and memory capacity with GPU autodetection
 - true single-node multi-task execution for `--ntasks`
 - batch jobs, interactive runs, allocations, and steps
 - dependencies and job arrays

@@ -23,6 +23,7 @@
 
 - CPU 预留量等于 `ntasks * cpus-per-task`
 - `ntasks` 会在 batch 和前台执行中按 task rank 启动一个本地进程
+- 总内存默认从 `/proc/meminfo` 的 `MemTotal` 检测，失败时回退到 `16384 MB`
 - 内存以 MB 保存
 - GPU 以整数 slot 表示
 - 准入基于预留量，而不是实际使用量

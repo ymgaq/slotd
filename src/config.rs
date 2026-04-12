@@ -61,7 +61,7 @@ impl AppConfig {
             scheduler_interval_ms: 300,
             cancel_grace_secs: 2,
             total_cpus: available_parallelism(),
-            total_memory_mb: 16 * 1024,
+            total_memory_mb: detect_total_memory_mb().unwrap_or(16 * 1024),
             total_gpus,
             gpu_model: env::var("SLOTD_GPU_MODEL")
                 .ok()
@@ -141,6 +141,24 @@ fn available_parallelism() -> u32 {
     std::thread::available_parallelism()
         .map(|count| count.get() as u32)
         .unwrap_or(1)
+}
+
+fn detect_total_memory_mb() -> Option<u64> {
+    fs::read_to_string("/proc/meminfo")
+        .ok()
+        .and_then(|contents| parse_total_memory_mb(&contents))
+}
+
+fn parse_total_memory_mb(contents: &str) -> Option<u64> {
+    contents.lines().find_map(|line| {
+        let value = line.strip_prefix("MemTotal:")?;
+        let mut parts = value.split_whitespace();
+        let kb = parts.next()?.parse::<u64>().ok()?;
+        match parts.next() {
+            Some(unit) if unit.eq_ignore_ascii_case("kB") => Some(kb / 1024),
+            _ => None,
+        }
+    })
 }
 
 fn env_u32(name: &str, default: u32) -> u32 {
@@ -284,12 +302,30 @@ fn normalize_gpu_name(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::nvidia_smi_candidates;
+    use super::{nvidia_smi_candidates, parse_total_memory_mb};
 
     #[test]
     fn includes_common_nvidia_smi_locations() {
         let candidates = nvidia_smi_candidates();
         assert!(candidates.contains(&"nvidia-smi"));
         assert!(candidates.contains(&"/usr/lib/wsl/lib/nvidia-smi"));
+    }
+
+    #[test]
+    fn parses_total_memory_from_proc_meminfo() {
+        let meminfo = "MemTotal:       65843092 kB\nMemFree:         1024000 kB\n";
+        assert_eq!(parse_total_memory_mb(meminfo), Some(64_299));
+    }
+
+    #[test]
+    fn ignores_meminfo_without_memtotal_kb() {
+        let meminfo = "MemFree:         1024000 kB\n";
+        assert_eq!(parse_total_memory_mb(meminfo), None);
+    }
+
+    #[test]
+    fn ignores_meminfo_with_unexpected_unit() {
+        let meminfo = "MemTotal:       65843092 MB\n";
+        assert_eq!(parse_total_memory_mb(meminfo), None);
     }
 }

@@ -23,6 +23,7 @@ controller と worker の分離はなく、リモートノード起動プロト�
 
 - CPU 予約量は `ntasks * cpus-per-task`
 - `ntasks` は batch と foreground 実行で task rank ごとに 1 つのローカルプロセスを起動する
+- 総メモリの既定値は `/proc/meminfo` の `MemTotal` から検出し、失敗時は `16384 MB` にフォールバックする
 - メモリは MB 単位で保存
 - GPU は整数スロット
 - admission は実使用量ではなく予約量ベース
