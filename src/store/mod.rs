@@ -1,6 +1,7 @@
+mod allocation;
 mod creation;
 mod query;
-mod resources;
+mod reporting;
 mod row;
 mod schema;
 pub(crate) mod support;

@@ -19,6 +19,7 @@ use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
 use crate::runtime::notify::notify_job;
 use crate::runtime::slurm_env::apply_slurm_env;
+use crate::runtime::terminal::{exit_signal, terminal_state_with_reasons};
 use crate::store::Store;
 use crate::store::support::join_gpu_ids;
 use crate::util::time::now_ts;
@@ -203,10 +204,14 @@ impl Runner {
                     if let Some(status) = child.try_wait()? {
                         let exit_code = status.code();
                         let term_signal = exit_signal(&status);
-                        let (state, reason) = terminal_state(
+                        let (state, reason) = terminal_state_with_reasons(
                             exit_code,
                             term_signal,
                             cgroup_oomed(running.cgroup_path.as_deref()),
+                            "Completed",
+                            "Signal",
+                            "NonZeroExitCode",
+                            "UnknownFailure",
                         );
                         let job = store.mark_finished(
                             job_id,
@@ -376,35 +381,6 @@ impl Runner {
         }
         cleanup_cgroup(running.cgroup_path.as_deref());
         Ok(())
-    }
-}
-
-fn terminal_state(
-    exit_code: Option<i32>,
-    term_signal: Option<i32>,
-    cgroup_oom: bool,
-) -> (JobState, &'static str) {
-    if cgroup_oom {
-        return (JobState::OutOfMemory, "OutOfMemory");
-    }
-    match (exit_code, term_signal) {
-        (Some(0), None) => (JobState::Completed, "Completed"),
-        (Some(_), None) => (JobState::Failed, "NonZeroExitCode"),
-        (_, Some(_)) => (JobState::Failed, "Signal"),
-        _ => (JobState::Failed, "UnknownFailure"),
-    }
-}
-
-fn exit_signal(status: &std::process::ExitStatus) -> Option<i32> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::ExitStatusExt;
-        status.signal()
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = status;
-        None
     }
 }
 
