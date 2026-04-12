@@ -9,7 +9,7 @@
 | オプション | 意味 |
 | --- | --- |
 | `-p`, `--partition` | partition で絞り込む |
-| `-N`, `--Node` | 互換性のために受理する |
+| `-N`, `--Node` | 単一ノード要約ビューに切り替える |
 | `-l`, `--long` | long default view を使う |
 | `-o`, `--format` | 出力 field を選ぶ |
 | `--noheader` | header を省略する |
@@ -28,6 +28,23 @@ gpu       | localhost | idle  | cpu,gpu  | gpu:0
 
 - 設定済み partition ごとに 1 行表示される
 - default partition には `*` が付く
+
+## Node View
+
+`sinfo -N` は partition ごとの行を 1 つのローカルノード要約にまとめます。
+
+典型的な出力:
+
+```text
+PARTITION | HOSTNAMES | STATE
+cpu,gpu*  | localhost | idle
+```
+
+補足:
+
+- `PARTITION` 列は partition 名をカンマで連結した値になる
+- その中でも default partition には `*` が付く
+- long view や format 指定で出す capacity/allocation 系の値は、表示対象 partition 全体で集約される
 
 ## Long View
 

@@ -19,9 +19,9 @@ use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest, WarningSignal};
 use crate::launch::{LaunchCommand, build_multitask_launcher, shell_join};
 use crate::output::{
-    parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
-    print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs, print_squeue_jobs_with_options,
-    print_squeue_jobs_with_start_times,
+    NodeSinfoRow, parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
+    print_sacct_jobs_delimited, print_sinfo, print_sinfo_nodes, print_squeue_jobs,
+    print_squeue_jobs_with_options, print_squeue_jobs_with_start_times,
 };
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
 
@@ -498,6 +498,11 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
 }
 
 fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
+    if args.pty {
+        return Err(SlotdError::from(
+            "--pty is not implemented yet; use plain foreground srun for now",
+        ));
+    }
     if let Some(job) = current_allocation_job(&config)? {
         if args.no_wait && (args.label || args.unbuffered) {
             return Err(SlotdError::from(
@@ -935,7 +940,12 @@ fn run_sinfo(config: AppConfig, args: SinfoArgs) -> Result<()> {
     match send_request(&config, &Request::NodeInfo)? {
         Response::NodeInfo { info } => {
             let partitions = filter_partitions(info.partitions, args.partitions.as_deref());
-            print_sinfo(&config, &partitions, &fields, args.noheader);
+            if args.node {
+                let rows = build_sinfo_node_rows(&config, &partitions);
+                print_sinfo_nodes(&rows, &fields, args.noheader);
+            } else {
+                print_sinfo(&config, &partitions, &fields, args.noheader);
+            }
             Ok(())
         }
         Response::Error { message } => Err(SlotdError::from(message)),
@@ -2225,6 +2235,106 @@ fn filter_partitions(
                 .unwrap_or(true)
         })
         .collect()
+}
+
+fn build_sinfo_node_rows(
+    config: &AppConfig,
+    partitions: &[crate::job::PartitionInfo],
+) -> Vec<NodeSinfoRow> {
+    if partitions.is_empty() {
+        return Vec::new();
+    }
+
+    let partitions_text = partitions
+        .iter()
+        .map(|partition| {
+            if partition.name == config.default_partition() {
+                format!("{}*", partition.name)
+            } else {
+                partition.name.clone()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let hostname = partitions[0].hostname.clone();
+    let features = partitions
+        .iter()
+        .map(|partition| partition.features.as_str())
+        .find(|value| !value.is_empty())
+        .unwrap_or("")
+        .to_string();
+    let total_cpus = partitions
+        .iter()
+        .map(|partition| partition.total_cpus)
+        .max()
+        .unwrap_or(0);
+    let allocated_cpus = partitions
+        .iter()
+        .map(|partition| partition.allocated_cpus)
+        .sum();
+    let total_memory_mb = partitions
+        .iter()
+        .map(|partition| partition.total_memory_mb)
+        .max()
+        .unwrap_or(0);
+    let allocated_memory_mb = partitions
+        .iter()
+        .map(|partition| partition.allocated_memory_mb)
+        .sum();
+    let total_gpus = partitions
+        .iter()
+        .map(|partition| partition.total_gpus)
+        .max()
+        .unwrap_or(0);
+    let allocated_gpus = partitions
+        .iter()
+        .map(|partition| partition.allocated_gpus)
+        .sum();
+    let running_jobs = partitions
+        .iter()
+        .map(|partition| partition.running_jobs)
+        .sum();
+    let pending_jobs = partitions
+        .iter()
+        .map(|partition| partition.pending_jobs)
+        .sum();
+    let gres_used = partitions
+        .iter()
+        .find(|partition| partition.gres_used != "N/A")
+        .map(|partition| partition.gres_used.clone())
+        .unwrap_or_else(|| "N/A".to_string());
+    let state = if partitions.iter().any(|partition| partition.state == "mix") {
+        "mix".to_string()
+    } else if partitions
+        .iter()
+        .any(|partition| partition.state == "alloc")
+        && partitions.iter().any(|partition| partition.state == "idle")
+    {
+        "mix".to_string()
+    } else if partitions
+        .iter()
+        .any(|partition| partition.state == "alloc")
+    {
+        "alloc".to_string()
+    } else {
+        "idle".to_string()
+    };
+
+    vec![NodeSinfoRow {
+        partitions: partitions_text,
+        hostname,
+        state,
+        gres_used,
+        features,
+        total_cpus,
+        allocated_cpus,
+        total_memory_mb,
+        allocated_memory_mb,
+        total_gpus,
+        allocated_gpus,
+        running_jobs,
+        pending_jobs,
+    }]
 }
 
 fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobRecord> {

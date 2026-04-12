@@ -42,7 +42,7 @@ daemon-managed な run job を投入するのは `--no-wait` の場合だけで�
 | `-e`, `--error <path>` | foreground stderr の出力先 |
 | `-D`, `--chdir <path>` | working directory |
 | `--immediate` | すぐにリソースが確保できない場合は失敗する |
-| `--pty` | foreground execution path を選ぶ |
+| `--pty` | PTY 対応のために予約されており、現在は明示エラーで拒否される |
 | `--constraint <feature>` | 一致する local feature を要求する |
 | `--cpu-bind <mode>` | CPU affinity を設定する |
 | `--label` | 出力の先頭に `<task_id>: ` を付ける |
@@ -100,3 +100,4 @@ Submitted run job 12
 制限:
 
 - `--label` と `--unbuffered` は `--no-wait` と同時には使えない
+- `--pty` は互換性のために parse されるが、実際の PTY 実装がないため現在は "not implemented yet" エラーで終了する

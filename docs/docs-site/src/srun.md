@@ -42,7 +42,7 @@ process per task rank on the same host and exports task-local ranks through
 | `-e`, `--error <path>` | Foreground stderr path |
 | `-D`, `--chdir <path>` | Working directory |
 | `--immediate` | Fail if resources are not available immediately |
-| `--pty` | Select the foreground execution path |
+| `--pty` | Reserved for PTY support; currently rejected |
 | `--constraint <feature>` | Require matching local features |
 | `--cpu-bind <mode>` | Bind CPU affinity |
 | `--label` | Prefix output with `<task_id>: ` |
@@ -100,3 +100,4 @@ Submitted run job 12
 Restrictions:
 
 - `--label` and `--unbuffered` are not supported together with `--no-wait`
+- `--pty` is parsed for compatibility but currently exits with a clear "not implemented yet" error until a real PTY path exists

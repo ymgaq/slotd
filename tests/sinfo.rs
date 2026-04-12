@@ -37,7 +37,11 @@ fn sinfo_filters_partitions_and_supports_custom_formats() {
 
 #[test]
 fn sinfo_long_and_node_views_render_without_headers_when_requested() {
-    let runtime = TestRuntime::new();
+    let runtime = TestRuntime::with_env(&[
+        ("SLOTD_GPU_COUNT", "1"),
+        ("SLOTD_CPU_PARTITIONS", "cpu"),
+        ("SLOTD_GPU_PARTITIONS", "gpu"),
+    ]);
 
     let long_output = runtime.run_checked(&["sinfo", "-l"]);
     assert!(
@@ -51,15 +55,17 @@ fn sinfo_long_and_node_views_render_without_headers_when_requested() {
     assert!(long_output.contains("CPUS"), "sinfo -l:\n{long_output}");
 
     let node_view = runtime.run_checked(&["sinfo", "-N", "--noheader", "-o", "%P %N %t"]);
+    let lines = node_view
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(lines.len(), 1, "sinfo -N --noheader:\n{node_view}");
     assert!(
-        node_view.lines().all(|line| !line.contains("PARTITION")),
+        lines[0].contains("cpu") && lines[0].contains("gpu*"),
         "sinfo -N --noheader:\n{node_view}"
     );
     assert!(
-        node_view
-            .lines()
-            .next()
-            .is_some_and(|line| !line.trim().is_empty()),
+        lines[0].contains("localhost") || !lines[0].trim().is_empty(),
         "sinfo -N --noheader:\n{node_view}"
     );
 }

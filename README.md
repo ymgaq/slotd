@@ -475,7 +475,7 @@ Expected result:
 | `-e`, `--error` | Foreground stderr path |
 | `-D`, `--chdir` | Working directory |
 | `--immediate` | Fail if resources are not available immediately |
-| `--pty` | Select the foreground execution path |
+| `--pty` | Reserved for PTY support; currently rejected with a clear error |
 | `--constraint` | Require matching local features |
 | `--cpu-bind` | CPU binding mode: `none`, `cores`, `map_cpu:<ids>` |
 | `--label` | Prefix output lines with `<task_id>: ` |
@@ -640,7 +640,7 @@ Main areas covered by the current suite:
 
 - command basics and CLI output such as `sbatch`, `srun`, `salloc`, `sinfo`, `squeue`, `sacct`, and `scontrol`
 - scheduling behavior including dependencies, arrays, delayed start, resource flags, constraints, and requeue handling
-- interactive and foreground execution paths such as `srun --pty`, `--label`, `--unbuffered`, and allocation/step flows
+- interactive and foreground execution paths such as `srun`, `--label`, `--unbuffered`, and allocation/step flows
 - persistence and lifecycle behavior including cancellation, recovery, update processing, warning signals, and output file handling
 - notification and accounting related behavior such as `SLOTD_NOTIFY_CMD` hooks and parsable query output
 

@@ -41,7 +41,7 @@ srun [options] -- <command...>
 | `-e`, `--error <path>` | 前台 stderr 输出路径 |
 | `-D`, `--chdir <path>` | 工作目录 |
 | `--immediate` | 如果资源不能立即可用则直接失败 |
-| `--pty` | 选择前台执行路径 |
+| `--pty` | 为 PTY 支持保留；当前会明确报错拒绝 |
 | `--constraint <feature>` | 要求匹配的本地 feature |
 | `--cpu-bind <mode>` | 设置 CPU affinity |
 | `--label` | 在输出前加上 `<task_id>: ` 前缀 |
@@ -99,3 +99,4 @@ Submitted run job 12
 限制：
 
 - `--label` 和 `--unbuffered` 不能与 `--no-wait` 一起使用
+- `--pty` 为兼容性保留并会被解析，但在真正的 PTY 路径实现之前，当前会以明确的 "not implemented yet" 错误退出

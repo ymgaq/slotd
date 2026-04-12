@@ -112,6 +112,23 @@ pub fn print_sinfo(
     );
 }
 
+pub fn print_sinfo_nodes(rows: &[NodeSinfoRow], fields: &[SinfoField], noheader: bool) {
+    print_table(
+        fields.iter().map(|field| TableColumn {
+            header: field.header().to_string(),
+            width: field.width(),
+            right_align: field.right_align(),
+        }),
+        rows.iter().map(|row| {
+            fields
+                .iter()
+                .map(|field| field.render_node(row))
+                .collect::<Vec<_>>()
+        }),
+        noheader,
+    );
+}
+
 #[derive(Debug, Clone, Copy)]
 pub enum SqueueField {
     JobId,
@@ -392,6 +409,23 @@ pub enum SinfoField {
     PendingJobs,
 }
 
+#[derive(Debug, Clone)]
+pub struct NodeSinfoRow {
+    pub partitions: String,
+    pub hostname: String,
+    pub state: String,
+    pub gres_used: String,
+    pub features: String,
+    pub total_cpus: u32,
+    pub allocated_cpus: u32,
+    pub total_memory_mb: u64,
+    pub allocated_memory_mb: u64,
+    pub total_gpus: u32,
+    pub allocated_gpus: u32,
+    pub running_jobs: usize,
+    pub pending_jobs: usize,
+}
+
 impl SinfoField {
     pub fn header(self) -> &'static str {
         match self {
@@ -464,6 +498,24 @@ impl SinfoField {
             Self::GpusAllocated => partition.allocated_gpus.to_string(),
             Self::RunningJobs => partition.running_jobs.to_string(),
             Self::PendingJobs => partition.pending_jobs.to_string(),
+        }
+    }
+
+    pub fn render_node(self, row: &NodeSinfoRow) -> String {
+        match self {
+            Self::Partition => row.partitions.clone(),
+            Self::Hostnames => row.hostname.clone(),
+            Self::State => row.state.clone(),
+            Self::GresUsed => row.gres_used.clone(),
+            Self::Features => row.features.clone(),
+            Self::Cpus => row.total_cpus.to_string(),
+            Self::CpusLoad => row.allocated_cpus.to_string(),
+            Self::Memory => format!("{}M", row.total_memory_mb),
+            Self::MemoryAllocated => format!("{}M", row.allocated_memory_mb),
+            Self::Gpus => row.total_gpus.to_string(),
+            Self::GpusAllocated => row.allocated_gpus.to_string(),
+            Self::RunningJobs => row.running_jobs.to_string(),
+            Self::PendingJobs => row.pending_jobs.to_string(),
         }
     }
 }

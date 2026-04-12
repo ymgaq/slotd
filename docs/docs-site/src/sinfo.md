@@ -9,7 +9,7 @@
 | Option | Meaning |
 | --- | --- |
 | `-p`, `--partition` | Filter partitions |
-| `-N`, `--Node` | Accepted for compatibility |
+| `-N`, `--Node` | Switch to the single-node summary view |
 | `-l`, `--long` | Use the long default view |
 | `-o`, `--format` | Select output fields |
 | `--noheader` | Omit the header |
@@ -28,6 +28,23 @@ Notes:
 
 - one row is shown per configured partition
 - the default partition is marked with `*`
+
+## Node View
+
+`sinfo -N` collapses the partition rows into a single local node summary.
+
+Typical output:
+
+```text
+PARTITION | HOSTNAMES | STATE
+cpu,gpu*  | localhost | idle
+```
+
+Notes:
+
+- the `PARTITION` column becomes a comma-joined partition list
+- the default partition in that list keeps the `*` marker
+- capacity and allocation fields in long or formatted node views are aggregated across the visible partitions
 
 ## Long View
 

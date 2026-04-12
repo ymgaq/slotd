@@ -84,7 +84,7 @@ fn srun_unbuffered_flushes_output_before_process_exit() {
 }
 
 #[test]
-fn srun_pty_smoke_test_runs_foreground_command() {
+fn srun_pty_fails_clearly_until_it_is_implemented() {
     let runtime = TestRuntime::new();
 
     let output = runtime.run_output(&[
@@ -98,12 +98,14 @@ fn srun_pty_smoke_test_runs_foreground_command() {
         "echo pty-ok",
     ]);
     assert!(
-        output.status.success(),
-        "srun --pty failed\nstdout:\n{}\nstderr:\n{}",
+        !output.status.success(),
+        "stdout:\n{}\nstderr:\n{}",
         String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stderr)
     );
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("pty-ok"), "stdout:\n{stdout}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--pty is not implemented yet"),
+        "stderr:\n{stderr}"
+    );
 }
