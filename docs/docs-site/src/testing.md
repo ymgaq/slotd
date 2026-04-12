@@ -36,7 +36,7 @@ The current suite focuses on behavior that matters to end users:
 
 Representative files in `tests/` include:
 
-- `cli_basic.rs`, `sbatch_options.rs`, `srun.rs`, `srun_options.rs`, `srun_modes.rs`, `salloc.rs`, `sinfo.rs`, `control.rs`, `query_output.rs`
+- `cli_basic.rs`, `sbatch_options.rs`, `srun.rs`, `srun_options.rs`, `srun_modes.rs`, `salloc.rs`, `sinfo.rs`, `control.rs`, `query_squeue.rs`, `query_sacct.rs`
 - `scheduling.rs`, `compound_scheduling.rs`, `dependency_variants.rs`, `array.rs`, `begin.rs`, `constraint.rs`, `resource_flags.rs`, `requeue.rs`, `timeout.rs`
 - `srun_interactive.rs`, `srun_allocation.rs`, `cpu_bind.rs`, `output_files.rs`, `cancellation.rs`, `recovery.rs`, `update.rs`, `warning_signal.rs`, `notify.rs`
 

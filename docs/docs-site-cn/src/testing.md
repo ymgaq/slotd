@@ -36,7 +36,7 @@ cargo test dependency_job_waits_for_prerequisite_before_running --test schedulin
 
 有代表性的测试文件包括：
 
-- `cli_basic.rs`, `sbatch_options.rs`, `srun.rs`, `srun_options.rs`, `srun_modes.rs`, `salloc.rs`, `sinfo.rs`, `control.rs`, `query_output.rs`
+- `cli_basic.rs`, `sbatch_options.rs`, `srun.rs`, `srun_options.rs`, `srun_modes.rs`, `salloc.rs`, `sinfo.rs`, `control.rs`, `query_squeue.rs`, `query_sacct.rs`
 - `scheduling.rs`, `compound_scheduling.rs`, `dependency_variants.rs`, `array.rs`, `begin.rs`, `constraint.rs`, `resource_flags.rs`, `requeue.rs`, `timeout.rs`
 - `srun_interactive.rs`, `srun_allocation.rs`, `cpu_bind.rs`, `output_files.rs`, `cancellation.rs`, `recovery.rs`, `update.rs`, `warning_signal.rs`, `notify.rs`
 
