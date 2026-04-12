@@ -1,25 +1,26 @@
 mod row;
 mod schema;
+pub(crate) mod support;
 
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::config::AppConfig;
-use crate::error::{Result, SlotdError};
-use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
-use crate::sbatch::{
+use crate::app::config::AppConfig;
+use crate::app::error::{Result, SlotdError};
+use crate::model::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
+use crate::submit::sbatch::{
     default_batch_output_pattern, expand_output_pattern, parse_array_spec, resolve_log_path,
 };
-use crate::store_support::{
+use crate::store::support::{
     default_name, ensure_parent_dir, filter_jobs, join_gpu_ids, order_pending_jobs,
     parse_gpu_ids, partition_gres_used, partition_state, path_string, script_command,
 };
-use crate::time::now_ts;
+use crate::util::time::now_ts;
 use row::{JOB_SELECT_COLUMNS, map_job};
 use schema::ensure_compat_schema;
 
-const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
+const MIGRATION_SQL: &str = include_str!("../../migrations/0001_init.sql");
 
 pub struct Store {
     conn: Connection,
@@ -632,7 +633,7 @@ impl Store {
             ))
         }
     }
-    fn partition_info(&self, partition: &str) -> Result<crate::job::PartitionInfo> {
+    fn partition_info(&self, partition: &str) -> Result<crate::model::job::PartitionInfo> {
         let (allocated_cpus, allocated_memory_mb, allocated_gpus) =
             self.running_usage_for_partition(partition)?;
         let running_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Running)?;
@@ -651,7 +652,7 @@ impl Store {
             self.config.total_gpus,
             &self.used_gpu_ids_for_partition(partition)?,
         );
-        Ok(crate::job::PartitionInfo {
+        Ok(crate::model::job::PartitionInfo {
             name: partition.to_string(),
             hostname: self.config.hostname.clone(),
             state,
@@ -769,10 +770,10 @@ fn next_step_id_query(conn: &Connection, parent_job_id: i64) -> Result<u32> {
 #[cfg(test)]
 mod tests {
     use super::Store;
-    use crate::config::AppConfig;
-    use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
-    use crate::store_support::order_pending_jobs;
-    use crate::time::now_ts;
+    use crate::app::config::AppConfig;
+    use crate::model::job::{JobRecord, JobState, OpenMode, SubmitRequest};
+    use crate::store::support::order_pending_jobs;
+    use crate::util::time::now_ts;
 
     fn pending_job(
         id: i64,

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::error::{Result, SlotdError};
+use crate::app::error::{Result, SlotdError};
 
 pub fn setup_job_cgroup(
     cgroup_base: Option<&Path>,

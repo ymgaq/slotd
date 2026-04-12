@@ -1,7 +1,7 @@
 use std::process::Command;
 
-use crate::config::AppConfig;
-use crate::job::JobRecord;
+use crate::app::config::AppConfig;
+use crate::model::job::JobRecord;
 
 pub(crate) fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     command.env(

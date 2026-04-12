@@ -1,5 +1,5 @@
-use crate::config::AppConfig;
-use crate::job::{JobRecord, JobState};
+use crate::app::config::AppConfig;
+use crate::model::job::{JobRecord, JobState};
 
 pub(crate) fn display_job_id(job: &JobRecord) -> String {
     if let (Some(parent_job_id), Some(step_id)) = (job.parent_job_id, job.step_id) {

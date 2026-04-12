@@ -3,9 +3,9 @@ use std::os::unix::net::UnixStream;
 
 use serde::{Deserialize, Serialize};
 
-use crate::config::AppConfig;
-use crate::error::{Result, SlotdError};
-use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
+use crate::app::config::AppConfig;
+use crate::app::error::{Result, SlotdError};
+use crate::model::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub enum Request {

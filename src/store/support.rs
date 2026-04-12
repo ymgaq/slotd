@@ -1,8 +1,8 @@
 use std::fs;
 use std::path::Path;
 
-use crate::error::{Result, SlotdError};
-use crate::job::{JobRecord, JobState};
+use crate::app::error::{Result, SlotdError};
+use crate::model::job::{JobRecord, JobState};
 
 pub(crate) fn default_name(script_name: &str) -> String {
     Path::new(script_name)

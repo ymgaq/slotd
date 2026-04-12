@@ -1,6 +1,6 @@
 use rusqlite::Connection;
 
-use crate::error::Result;
+use crate::app::error::Result;
 
 pub(super) fn ensure_compat_schema(conn: &Connection) -> Result<()> {
     ensure_column(

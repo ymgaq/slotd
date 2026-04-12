@@ -1,6 +1,6 @@
-use crate::error::SlotdError;
-use crate::job::{JobRecord, WarningSignal};
-use crate::store_support::{parse_export_env_json, parse_gpu_ids};
+use crate::app::error::SlotdError;
+use crate::model::job::{JobRecord, WarningSignal};
+use crate::store::support::{parse_export_env_json, parse_gpu_ids};
 
 pub(super) const JOB_SELECT_COLUMNS: &str = "id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
                     requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,

@@ -5,14 +5,14 @@ use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
-use crate::config::AppConfig;
-use crate::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
-use crate::error::{Result, SlotdError};
-use crate::ipc::{Request, Response, send_request};
-use crate::job::{JobRecord, JobState};
-use crate::launch::{LaunchCommand, build_multitask_launcher, shell_join};
-use crate::slurm_env::apply_slurm_env;
+use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
+use crate::app::config::AppConfig;
+use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
+use crate::app::error::{Result, SlotdError};
+use crate::proto::ipc::{Request, Response, send_request};
+use crate::model::job::{JobRecord, JobState};
+use crate::runtime::launch::{LaunchCommand, build_multitask_launcher, shell_join};
+use crate::runtime::slurm_env::apply_slurm_env;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct ForegroundIoOptions<'a> {

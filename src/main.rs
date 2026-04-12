@@ -1,38 +1,24 @@
-mod cgroup;
-mod cli;
-mod commands;
-mod config;
-mod cpu;
-mod daemon;
-mod env;
-mod error;
-mod foreground;
-mod ipc;
-mod job;
-mod job_display;
-mod launch;
-mod notify;
-mod output;
-mod recovery;
-mod runner;
-mod sbatch;
-mod slurm_env;
-mod signals;
+mod app;
+mod command;
+mod format;
+mod model;
+mod proto;
+mod runtime;
 mod store;
-mod store_support;
-mod time;
+mod submit;
+mod util;
 
 use std::ffi::OsString;
 
 use clap::Parser;
 
-use crate::cli::{Cli, dispatch_argv0};
-use crate::error::Result;
+use crate::command::cli::{Cli, dispatch_argv0};
+use crate::app::error::Result;
 
 fn main() {
     if let Err(error) = run() {
         match error {
-            crate::error::SlotdError::Exit(code) => std::process::exit(code),
+            crate::app::error::SlotdError::Exit(code) => std::process::exit(code),
             other => {
                 eprintln!("error: {other}");
                 std::process::exit(1);

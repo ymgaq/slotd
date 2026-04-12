@@ -1,7 +1,7 @@
 use nix::sched::CpuSet;
 use nix::unistd::Pid;
 
-use crate::error::{Result, SlotdError};
+use crate::app::error::{Result, SlotdError};
 
 pub(crate) fn resolve_cpu_bind_ids(
     value: Option<&str>,

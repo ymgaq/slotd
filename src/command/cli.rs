@@ -6,23 +6,23 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
-use crate::commands;
-use crate::config::AppConfig;
-use crate::daemon;
-use crate::env::{parse_env_flag, resolve_export_env};
-use crate::error::{Result, SlotdError};
-use crate::foreground::{
+use crate::command::handlers;
+use crate::app::config::AppConfig;
+use crate::runtime::daemon;
+use crate::util::env::{parse_env_flag, resolve_export_env};
+use crate::app::error::{Result, SlotdError};
+use crate::runtime::foreground::{
     ForegroundExecutionOptions, ForegroundIoOptions, run_foreground_allocation,
     run_foreground_allocation_with_mode, run_foreground_step,
 };
-use crate::ipc::{Request, Response, send_request};
-use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
-use crate::job_display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
-use crate::launch::shell_join;
-use crate::output::NodeSinfoRow;
-use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
-use crate::signals::parse_warning_signal;
-use crate::time::{format_duration_secs, format_timestamp, now_ts, parse_begin_time};
+use crate::proto::ipc::{Request, Response, send_request};
+use crate::model::job::{JobRecord, JobState, OpenMode, SubmitRequest};
+use crate::model::display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
+use crate::runtime::launch::shell_join;
+use crate::format::NodeSinfoRow;
+use crate::submit::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
+use crate::util::signals::parse_warning_signal;
+use crate::util::time::{format_duration_secs, format_timestamp, now_ts, parse_begin_time};
 
 #[cfg(test)]
 const SUPPORTED_ROOT_COMMANDS: &[&str] = &[
@@ -335,11 +335,11 @@ impl Cli {
             Commands::Sbatch(args) => run_sbatch(config, args),
             Commands::Srun(args) => run_srun(config, args),
             Commands::Salloc(args) => run_salloc(config, args),
-            Commands::Scontrol(args) => commands::run_scontrol(config, args),
-            Commands::Squeue(args) => commands::run_squeue(config, args),
-            Commands::Sacct(args) => commands::run_sacct(config, args),
-            Commands::Scancel(args) => commands::run_scancel(config, args),
-            Commands::Sinfo(args) => commands::run_sinfo(config, args),
+            Commands::Scontrol(args) => handlers::run_scontrol(config, args),
+            Commands::Squeue(args) => handlers::run_squeue(config, args),
+            Commands::Sacct(args) => handlers::run_sacct(config, args),
+            Commands::Scancel(args) => handlers::run_scancel(config, args),
+            Commands::Sinfo(args) => handlers::run_sinfo(config, args),
         }
     }
 }
@@ -378,7 +378,7 @@ fn run_sbatch(config: AppConfig, args: SbatchArgs) -> Result<()> {
         (
             "wrap".to_string(),
             format!("#!/usr/bin/env bash\n{}\n", wrap),
-            crate::sbatch::BatchDirectives::default(),
+            crate::submit::sbatch::BatchDirectives::default(),
             Some(wrap.clone()),
         )
     } else {
@@ -1172,9 +1172,9 @@ fn parse_state(value: &str) -> Result<JobState> {
 }
 
 pub(crate) fn filter_partitions(
-    partitions: Vec<crate::job::PartitionInfo>,
+    partitions: Vec<crate::model::job::PartitionInfo>,
     filters: Option<&[String]>,
-) -> Vec<crate::job::PartitionInfo> {
+) -> Vec<crate::model::job::PartitionInfo> {
     partitions
         .into_iter()
         .filter(|partition| {
@@ -1187,7 +1187,7 @@ pub(crate) fn filter_partitions(
 
 pub(crate) fn build_sinfo_node_rows(
     config: &AppConfig,
-    partitions: &[crate::job::PartitionInfo],
+    partitions: &[crate::model::job::PartitionInfo],
 ) -> Vec<NodeSinfoRow> {
     if partitions.is_empty() {
         return Vec::new();
@@ -1353,14 +1353,14 @@ mod tests {
         load_sbatch_env_overrides_with, merge_batch_directives, parse_begin_time,
         parse_warning_signal,
     };
-    use crate::config::AppConfig;
-    use crate::cpu::resolve_cpu_bind_ids;
-    use crate::env::resolve_export_spec;
-    use crate::job::{JobRecord, JobState, OpenMode};
-    use crate::signals::parse_signal_name;
-    use crate::time::now_ts;
-    use crate::time::parse_time_filter;
-    use crate::sbatch::BatchDirectives;
+    use crate::app::config::AppConfig;
+    use crate::runtime::cpu::resolve_cpu_bind_ids;
+    use crate::util::env::resolve_export_spec;
+    use crate::model::job::{JobRecord, JobState, OpenMode};
+    use crate::util::signals::parse_signal_name;
+    use crate::util::time::now_ts;
+    use crate::util::time::parse_time_filter;
+    use crate::submit::sbatch::BatchDirectives;
 
     #[test]
     fn argv0_dispatch_inserts_slurm_alias() {

@@ -1,8 +1,8 @@
 use std::process::Command;
 
-use crate::config::AppConfig;
-use crate::error::Result;
-use crate::job::JobRecord;
+use crate::app::config::AppConfig;
+use crate::app::error::Result;
+use crate::model::job::JobRecord;
 
 pub fn notify_job(config: &AppConfig, job: &JobRecord) -> Result<()> {
     if job.parent_job_id.is_some() || !job.state.is_terminal() {

@@ -1,7 +1,7 @@
 use std::fs;
 use std::path::Path;
 
-use crate::error::{Result, SlotdError};
+use crate::app::error::{Result, SlotdError};
 
 pub(crate) fn resolve_export_env(
     export: Option<&str>,

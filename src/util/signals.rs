@@ -1,5 +1,5 @@
-use crate::error::{Result, SlotdError};
-use crate::job::WarningSignal;
+use crate::app::error::{Result, SlotdError};
+use crate::model::job::WarningSignal;
 
 pub(crate) fn parse_warning_signal(value: &str) -> Result<WarningSignal> {
     let trimmed = value.trim();

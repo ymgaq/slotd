@@ -227,6 +227,24 @@ Rules:
   stable design constraints
 - detailed command behavior belongs in `COMMAND_REFERENCE.md`, not here
 
+### Internal Source Layout
+
+The repository should keep an intentionally shallow top-level split by
+responsibility:
+
+- `src/app/` for shared application configuration and error types
+- `src/model/` for job-domain types and display helpers
+- `src/proto/` for daemon request/response types
+- `src/util/` for generic parsing and time/signal/environment helpers
+- `src/runtime/` for daemon, launch, recovery, and process execution
+- `src/command/` for CLI surface and command handlers
+- `src/format/` for output rendering
+- `src/submit/` for submission-time parsing and normalization
+- `src/store/` for persistence and schema concerns
+
+This layout is intended to improve maintenance and navigation. It should not be
+used as a reason to hide behavior behind unnecessary abstraction layers.
+
 ### User-Facing Docs
 
 User-facing docs are:

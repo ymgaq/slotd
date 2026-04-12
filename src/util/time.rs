@@ -1,5 +1,5 @@
-use crate::error::{Result, SlotdError};
-use crate::sbatch::parse_time_limit_secs;
+use crate::app::error::{Result, SlotdError};
+use crate::submit::sbatch::parse_time_limit_secs;
 
 pub(crate) fn now_ts() -> i64 {
     use std::time::{SystemTime, UNIX_EPOCH};

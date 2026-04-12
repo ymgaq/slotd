@@ -4,13 +4,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::thread;
 use std::time::Duration;
 
-use crate::config::AppConfig;
-use crate::error::Result;
-use crate::ipc::{Request, Response};
-use crate::job::{JobRecord, JobState, SubmitRequest};
-use crate::notify::notify_job;
-use crate::recovery;
-use crate::runner::Runner;
+use crate::app::config::AppConfig;
+use crate::app::error::Result;
+use crate::proto::ipc::{Request, Response};
+use crate::model::job::{JobRecord, JobState, SubmitRequest};
+use crate::runtime::notify::notify_job;
+use crate::runtime::recovery;
+use crate::runtime::runner::Runner;
 use crate::store::Store;
 
 pub fn run(config: AppConfig) -> Result<()> {
@@ -404,7 +404,7 @@ fn dependency_clause_satisfied(store: &Store, job: &JobRecord, clause: &str) -> 
         .filter(|value| !value.is_empty())
         .map(|value| {
             value.parse::<i64>().map_err(|_| {
-                crate::error::SlotdError::from(format!("invalid dependency job id: {value}"))
+                crate::app::error::SlotdError::from(format!("invalid dependency job id: {value}"))
             })
         })
         .collect::<Result<Vec<_>>>()?;

@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 
-use crate::error::{Result, SlotdError};
+use crate::app::error::{Result, SlotdError};
 
 #[derive(Debug, Default, Clone)]
 pub struct BatchDirectives {

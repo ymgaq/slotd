@@ -12,16 +12,16 @@ use nix::sched::{CpuSet, sched_setaffinity};
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, setsid};
 
-use crate::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
-use crate::config::AppConfig;
-use crate::error::Result;
-use crate::job::{JobRecord, JobState, OpenMode};
-use crate::launch::{LaunchCommand, build_multitask_launcher};
-use crate::notify::notify_job;
-use crate::slurm_env::apply_slurm_env;
+use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
+use crate::app::config::AppConfig;
+use crate::app::error::Result;
+use crate::model::job::{JobRecord, JobState, OpenMode};
+use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
+use crate::runtime::notify::notify_job;
+use crate::runtime::slurm_env::apply_slurm_env;
 use crate::store::Store;
-use crate::store_support::join_gpu_ids;
-use crate::time::now_ts;
+use crate::store::support::join_gpu_ids;
+use crate::util::time::now_ts;
 
 pub struct RunningJob {
     pub pgid: i32,
@@ -62,7 +62,7 @@ impl Runner {
         };
 
         let status_path = job_status_path(job)
-            .ok_or_else(|| crate::error::SlotdError::from("missing script path for daemon job"))?;
+            .ok_or_else(|| crate::app::error::SlotdError::from("missing script path for daemon job"))?;
         let wrapper_path = job_wrapper_path(job);
         std::fs::write(
             &wrapper_path,
@@ -306,7 +306,7 @@ impl Runner {
             return Ok(false);
         };
         let signal = Signal::try_from(signal)
-            .map_err(|_| crate::error::SlotdError::from(format!("unsupported signal: {signal}")))?;
+            .map_err(|_| crate::app::error::SlotdError::from(format!("unsupported signal: {signal}")))?;
         let _ = killpg(Pid::from_raw(running.pgid), signal);
         Ok(true)
     }
@@ -472,17 +472,17 @@ fn resolve_cpu_bind_ids(
             .filter(|part| !part.is_empty())
         {
             let cpu = part.parse::<usize>().map_err(|_| {
-                crate::error::SlotdError::from(format!("invalid cpu-bind cpu id: {part}"))
+                crate::app::error::SlotdError::from(format!("invalid cpu-bind cpu id: {part}"))
             })?;
             if cpu >= total_cpus as usize {
-                return Err(crate::error::SlotdError::from(format!(
+                return Err(crate::app::error::SlotdError::from(format!(
                     "cpu-bind cpu id {cpu} exceeds available CPUs"
                 )));
             }
             cpus.push(cpu);
         }
         if cpus.is_empty() {
-            return Err(crate::error::SlotdError::from(
+            return Err(crate::app::error::SlotdError::from(
                 "cpu-bind map_cpu requires at least one CPU id",
             ));
         }
@@ -490,7 +490,7 @@ fn resolve_cpu_bind_ids(
         cpus.dedup();
         return Ok(Some(cpus));
     }
-    Err(crate::error::SlotdError::from(format!(
+    Err(crate::app::error::SlotdError::from(format!(
         "unsupported cpu-bind value: {value}; supported: none, cores, map_cpu:<ids>"
     )))
 }
@@ -500,10 +500,10 @@ fn apply_cpu_affinity(cpu_ids: &[usize]) -> Result<()> {
     for &cpu_id in cpu_ids {
         cpu_set
             .set(cpu_id)
-            .map_err(|error| crate::error::SlotdError::from(error.to_string()))?;
+            .map_err(|error| crate::app::error::SlotdError::from(error.to_string()))?;
     }
     sched_setaffinity(Pid::from_raw(0), &cpu_set)
-        .map_err(|error| crate::error::SlotdError::from(error.to_string()))
+        .map_err(|error| crate::app::error::SlotdError::from(error.to_string()))
 }
 
 fn job_status_path(job: &JobRecord) -> Option<PathBuf> {

@@ -4,7 +4,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::process::Command;
 
-use crate::error::Result;
+use crate::app::error::Result;
 
 #[derive(Debug, Clone)]
 pub struct AppConfig {
