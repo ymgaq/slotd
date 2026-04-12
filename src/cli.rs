@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::commands;
 use crate::config::AppConfig;
 use crate::daemon;
 use crate::env::{parse_env_flag, resolve_export_env};
@@ -18,14 +19,10 @@ use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
 use crate::job_display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
 use crate::launch::shell_join;
-use crate::output::{
-    NodeSinfoRow, parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
-    print_sacct_jobs_delimited, print_sinfo, print_sinfo_nodes, print_squeue_jobs,
-    print_squeue_jobs_with_options, print_squeue_jobs_with_start_times,
-};
+use crate::output::NodeSinfoRow;
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
-use crate::signals::{parse_signal_name, parse_warning_signal};
-use crate::time::{format_duration_secs, format_timestamp, now_ts, parse_begin_time, parse_time_filter};
+use crate::signals::parse_warning_signal;
+use crate::time::{format_duration_secs, format_timestamp, now_ts, parse_begin_time};
 
 #[cfg(test)]
 const SUPPORTED_ROOT_COMMANDS: &[&str] = &[
@@ -220,66 +217,66 @@ pub struct SbatchArgs {
 
 #[derive(Debug, Args)]
 pub struct ScontrolArgs {
-    action: String,
-    entity: String,
-    job_id: i64,
+    pub(crate) action: String,
+    pub(crate) entity: String,
+    pub(crate) job_id: i64,
     #[arg(trailing_var_arg = true, allow_hyphen_values = true)]
-    updates: Vec<String>,
+    pub(crate) updates: Vec<String>,
 }
 
 #[derive(Debug, Args)]
 pub struct ScancelArgs {
     #[arg(long, short = 's')]
-    signal: Option<String>,
-    job_id: String,
+    pub(crate) signal: Option<String>,
+    pub(crate) job_id: String,
 }
 
 #[derive(Debug, Args)]
 pub struct SqueueArgs {
     #[arg(long)]
-    all: bool,
+    pub(crate) all: bool,
     #[arg(short = 't', long, value_delimiter = ',')]
-    states: Option<Vec<String>>,
+    pub(crate) states: Option<Vec<String>>,
     #[arg(short = 'j', long = "jobs", value_delimiter = ',')]
-    jobs: Option<Vec<i64>>,
+    pub(crate) jobs: Option<Vec<i64>>,
     #[arg(short = 'u', long = "user")]
-    user: Option<String>,
+    pub(crate) user: Option<String>,
     #[arg(short = 'p', long = "partition", value_delimiter = ',')]
-    partitions: Option<Vec<String>>,
+    pub(crate) partitions: Option<Vec<String>>,
     #[arg(short = 'o', long = "format")]
-    format: Option<String>,
+    pub(crate) format: Option<String>,
     #[arg(short = 'S', long = "sort")]
-    sort: Option<String>,
+    pub(crate) sort: Option<String>,
     #[arg(short = 'l', long = "long")]
-    long: bool,
+    pub(crate) long: bool,
     #[arg(long)]
-    start: bool,
+    pub(crate) start: bool,
     #[arg(long)]
-    array: bool,
+    pub(crate) array: bool,
     #[arg(long = "noheader")]
-    noheader: bool,
+    pub(crate) noheader: bool,
 }
 
 #[derive(Debug, Args)]
 pub struct SacctArgs {
     #[arg(short = 'j', long = "jobs", value_delimiter = ',')]
-    jobs: Option<Vec<i64>>,
+    pub(crate) jobs: Option<Vec<i64>>,
     #[arg(short = 's', long = "state", value_delimiter = ',')]
-    states: Option<Vec<String>>,
+    pub(crate) states: Option<Vec<String>>,
     #[arg(short = 'S', long = "starttime")]
-    start_time: Option<String>,
+    pub(crate) start_time: Option<String>,
     #[arg(short = 'E', long = "endtime")]
-    end_time: Option<String>,
+    pub(crate) end_time: Option<String>,
     #[arg(short = 'u', long = "user")]
-    user: Option<String>,
+    pub(crate) user: Option<String>,
     #[arg(short = 'p', long = "partition", value_delimiter = ',')]
-    partitions: Option<Vec<String>>,
+    pub(crate) partitions: Option<Vec<String>>,
     #[arg(short = 'o', long = "format")]
-    format: Option<String>,
+    pub(crate) format: Option<String>,
     #[arg(short = 'P', long = "parsable2")]
-    parsable2: bool,
+    pub(crate) parsable2: bool,
     #[arg(short = 'n', long = "noheader")]
-    noheader: bool,
+    pub(crate) noheader: bool,
 }
 
 #[derive(Debug, Args)]
@@ -319,15 +316,15 @@ pub struct SallocArgs {
 #[derive(Debug, Args)]
 pub struct SinfoArgs {
     #[arg(short = 'p', long = "partition", value_delimiter = ',')]
-    partitions: Option<Vec<String>>,
+    pub(crate) partitions: Option<Vec<String>>,
     #[arg(short = 'N', long = "Node")]
-    node: bool,
+    pub(crate) node: bool,
     #[arg(short = 'l', long = "long")]
-    long: bool,
+    pub(crate) long: bool,
     #[arg(short = 'o', long = "format")]
-    format: Option<String>,
+    pub(crate) format: Option<String>,
     #[arg(long = "noheader")]
-    noheader: bool,
+    pub(crate) noheader: bool,
 }
 
 impl Cli {
@@ -338,11 +335,11 @@ impl Cli {
             Commands::Sbatch(args) => run_sbatch(config, args),
             Commands::Srun(args) => run_srun(config, args),
             Commands::Salloc(args) => run_salloc(config, args),
-            Commands::Scontrol(args) => run_scontrol(config, args),
-            Commands::Squeue(args) => run_squeue(config, args),
-            Commands::Sacct(args) => run_sacct(config, args),
-            Commands::Scancel(args) => run_scancel(config, args),
-            Commands::Sinfo(args) => run_sinfo(config, args),
+            Commands::Scontrol(args) => commands::run_scontrol(config, args),
+            Commands::Squeue(args) => commands::run_squeue(config, args),
+            Commands::Sacct(args) => commands::run_sacct(config, args),
+            Commands::Scancel(args) => commands::run_scancel(config, args),
+            Commands::Sinfo(args) => commands::run_sinfo(config, args),
         }
     }
 }
@@ -671,277 +668,6 @@ fn run_salloc(config: AppConfig, args: SallocArgs) -> Result<()> {
     run_foreground_allocation(&config, &job, &command)
 }
 
-fn run_squeue(config: AppConfig, args: SqueueArgs) -> Result<()> {
-    let fields = if args.start && args.format.is_none() {
-        vec![
-            crate::output::SqueueField::JobId,
-            crate::output::SqueueField::Partition,
-            crate::output::SqueueField::Name,
-            crate::output::SqueueField::User,
-            crate::output::SqueueField::StateCompact,
-            crate::output::SqueueField::StartTime,
-            crate::output::SqueueField::NodeListReason,
-        ]
-    } else {
-        parse_squeue_fields(args.format.as_deref(), args.long).map_err(SlotdError::from)?
-    };
-    let state_filter = if let Some(values) = args.states {
-        Some(parse_states(values)?)
-    } else if args.all {
-        None
-    } else {
-        Some(vec![JobState::Pending, JobState::Running])
-    };
-
-    match send_request(
-        &config,
-        &Request::ListJobs {
-            states: state_filter,
-            ids: args.jobs,
-            user_name: args.user,
-            partitions: args.partitions,
-        },
-    )? {
-        Response::Jobs { jobs } => {
-            let jobs = sort_squeue_jobs(jobs, args.sort.as_deref());
-            if args.start {
-                let start_times = estimate_start_times(&config, &jobs);
-                print_squeue_jobs_with_start_times(
-                    &config,
-                    &jobs,
-                    &fields,
-                    &start_times,
-                    args.noheader,
-                    args.array,
-                );
-            } else if args.array {
-                print_squeue_jobs_with_options(&config, &jobs, &fields, args.noheader, true);
-            } else {
-                print_squeue_jobs(&config, &jobs, &fields, args.noheader);
-            }
-            Ok(())
-        }
-        Response::Error { message } => Err(SlotdError::from(message)),
-        other => Err(SlotdError::from(format!(
-            "unexpected response to squeue: {other:?}"
-        ))),
-    }
-}
-
-fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
-    if !args.entity.eq_ignore_ascii_case("job") {
-        return Err(SlotdError::from(
-            "supported syntax: scontrol <action> job <job_id>",
-        ));
-    }
-
-    if args.action.eq_ignore_ascii_case("hold") {
-        return match send_request(
-            &config,
-            &Request::HoldJob {
-                job_id: args.job_id,
-            },
-        )? {
-            Response::Submitted { .. } => Ok(()),
-            Response::Error { message } => Err(SlotdError::from(message)),
-            other => Err(SlotdError::from(format!(
-                "unexpected response to scontrol hold: {other:?}"
-            ))),
-        };
-    }
-
-    if args.action.eq_ignore_ascii_case("release") {
-        return match send_request(
-            &config,
-            &Request::ReleaseJob {
-                job_id: args.job_id,
-            },
-        )? {
-            Response::Submitted { .. } => Ok(()),
-            Response::Error { message } => Err(SlotdError::from(message)),
-            other => Err(SlotdError::from(format!(
-                "unexpected response to scontrol release: {other:?}"
-            ))),
-        };
-    }
-
-    if args.action.eq_ignore_ascii_case("update") {
-        let mut name = None;
-        let mut partition = None;
-        let mut time_limit_secs = None;
-        let mut priority = None;
-        for update in &args.updates {
-            let Some((key, value)) = update.split_once('=') else {
-                return Err(SlotdError::from(format!(
-                    "invalid update expression: {update}"
-                )));
-            };
-            match key.to_ascii_lowercase().as_str() {
-                "jobname" | "name" => name = Some(value.to_string()),
-                "partition" => partition = Some(value.to_string()),
-                "timelimit" | "time" => time_limit_secs = Some(parse_time_limit_secs(value)?),
-                "priority" => {
-                    priority = Some(
-                        value
-                            .parse::<i32>()
-                            .map_err(|_| SlotdError::from(format!("invalid priority: {value}")))?,
-                    )
-                }
-                other => return Err(SlotdError::from(format!("unsupported update key: {other}"))),
-            }
-        }
-        if let Some(partition) = partition.as_deref() {
-            let job = load_job(&config, args.job_id)?;
-            if let Some(constraint) = job.constraint.as_deref() {
-                validate_constraint(&config, constraint, partition)?;
-            }
-        }
-        return match send_request(
-            &config,
-            &Request::UpdateJob {
-                job_id: args.job_id,
-                name,
-                partition,
-                time_limit_secs,
-                priority,
-            },
-        )? {
-            Response::Submitted { .. } => Ok(()),
-            Response::Error { message } => Err(SlotdError::from(message)),
-            other => Err(SlotdError::from(format!(
-                "unexpected response to scontrol update: {other:?}"
-            ))),
-        };
-    }
-
-    if !args.action.eq_ignore_ascii_case("show") {
-        return Err(SlotdError::from(
-            "supported syntax: scontrol show|hold|release|update job <job_id>; update keys: JobName, Partition, TimeLimit, Priority",
-        ));
-    }
-
-    match send_request(
-        &config,
-        &Request::GetJob {
-            job_id: args.job_id,
-        },
-    )? {
-        Response::Job { job } => {
-            let Some(job) = *job else {
-                return Err(SlotdError::from(format!("job {} not found", args.job_id)));
-            };
-            let steps = match send_request(
-                &config,
-                &Request::ListSteps {
-                    parent_job_id: job.id,
-                },
-            )? {
-                Response::Jobs { jobs } => jobs,
-                Response::Error { message } => return Err(SlotdError::from(message)),
-                other => {
-                    return Err(SlotdError::from(format!(
-                        "unexpected response to scontrol step listing: {other:?}"
-                    )));
-                }
-            };
-            print_scontrol_job(&config, &job, &steps);
-            Ok(())
-        }
-        Response::Error { message } => Err(SlotdError::from(message)),
-        other => Err(SlotdError::from(format!(
-            "unexpected response to scontrol: {other:?}"
-        ))),
-    }
-}
-
-fn run_sacct(config: AppConfig, args: SacctArgs) -> Result<()> {
-    let state_filter = args.states.map(parse_states).transpose()?;
-    let fields = parse_sacct_fields(args.format.as_deref()).map_err(SlotdError::from)?;
-    let start_time = args
-        .start_time
-        .as_deref()
-        .map(parse_time_filter)
-        .transpose()?;
-    let end_time = args
-        .end_time
-        .as_deref()
-        .map(parse_time_filter)
-        .transpose()?;
-
-    match send_request(
-        &config,
-        &Request::ListAccountingJobs {
-            states: state_filter,
-            ids: args.jobs,
-            user_name: args.user,
-            partitions: args.partitions,
-            start_time,
-            end_time,
-        },
-    )? {
-        Response::Jobs { jobs } => {
-            if args.parsable2 {
-                print_sacct_jobs_delimited(&config, &jobs, &fields, args.noheader, "|");
-            } else {
-                print_sacct_jobs(&config, &jobs, &fields, args.noheader);
-            }
-            Ok(())
-        }
-        Response::Error { message } => Err(SlotdError::from(message)),
-        other => Err(SlotdError::from(format!(
-            "unexpected response to sacct: {other:?}"
-        ))),
-    }
-}
-
-fn run_scancel(config: AppConfig, args: ScancelArgs) -> Result<()> {
-    let job_id = resolve_job_reference(&config, &args.job_id)?;
-    if let Some(signal) = args.signal.as_deref() {
-        let signal = parse_signal_name(signal)?;
-        return match send_request(&config, &Request::SignalJob { job_id, signal })? {
-            Response::Submitted { job_id } => {
-                println!("Signaled job {job_id}");
-                Ok(())
-            }
-            Response::Error { message } => Err(SlotdError::from(message)),
-            other => Err(SlotdError::from(format!(
-                "unexpected response to scancel signal: {other:?}"
-            ))),
-        };
-    }
-
-    match send_request(&config, &Request::Cancel { job_id })? {
-        Response::Cancelled { job_id } => {
-            println!("Cancelled job {job_id}");
-            Ok(())
-        }
-        Response::Error { message } => Err(SlotdError::from(message)),
-        other => Err(SlotdError::from(format!(
-            "unexpected response to scancel: {other:?}"
-        ))),
-    }
-}
-
-fn run_sinfo(config: AppConfig, args: SinfoArgs) -> Result<()> {
-    let fields = parse_sinfo_fields(args.format.as_deref(), args.long).map_err(SlotdError::from)?;
-    match send_request(&config, &Request::NodeInfo)? {
-        Response::NodeInfo { info } => {
-            let partitions = filter_partitions(info.partitions, args.partitions.as_deref());
-            if args.node {
-                let rows = build_sinfo_node_rows(&config, &partitions);
-                print_sinfo_nodes(&rows, &fields, args.noheader);
-            } else {
-                print_sinfo(&config, &partitions, &fields, args.noheader);
-            }
-            Ok(())
-        }
-        Response::Error { message } => Err(SlotdError::from(message)),
-        other => Err(SlotdError::from(format!(
-            "unexpected response to sinfo: {other:?}"
-        ))),
-    }
-}
-
 fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
     loop {
         match send_request(config, &Request::GetJob { job_id })? {
@@ -960,7 +686,7 @@ fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord>
     }
 }
 
-fn load_job(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
+pub(crate) fn load_job(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
     match send_request(config, &Request::GetJob { job_id })? {
         Response::Job { job } => {
             (*job).ok_or_else(|| SlotdError::from(format!("job {job_id} not found")))
@@ -1156,7 +882,7 @@ fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
     }
 }
 
-fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) {
+pub(crate) fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) {
     let dependency = job.dependency.as_deref().unwrap_or("(null)");
     let reason = job.state_reason.as_deref().unwrap_or("(null)");
     let stdout = if job.stdout_path.is_empty() {
@@ -1266,14 +992,14 @@ fn current_dir_string() -> String {
         .unwrap_or_else(|_| ".".to_string())
 }
 
-fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
+pub(crate) fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
     values
         .into_iter()
         .map(|value| parse_state(&value))
         .collect()
 }
 
-fn validate_constraint(config: &AppConfig, value: &str, partition: &str) -> Result<()> {
+pub(crate) fn validate_constraint(config: &AppConfig, value: &str, partition: &str) -> Result<()> {
     if config.matches_constraint(value, partition) {
         Ok(())
     } else {
@@ -1374,7 +1100,7 @@ fn merge_batch_directives(
 }
 
 
-fn estimate_start_times(
+pub(crate) fn estimate_start_times(
     config: &AppConfig,
     jobs: &[JobRecord],
 ) -> std::collections::HashMap<i64, String> {
@@ -1445,7 +1171,7 @@ fn parse_state(value: &str) -> Result<JobState> {
     }
 }
 
-fn filter_partitions(
+pub(crate) fn filter_partitions(
     partitions: Vec<crate::job::PartitionInfo>,
     filters: Option<&[String]>,
 ) -> Vec<crate::job::PartitionInfo> {
@@ -1459,7 +1185,7 @@ fn filter_partitions(
         .collect()
 }
 
-fn build_sinfo_node_rows(
+pub(crate) fn build_sinfo_node_rows(
     config: &AppConfig,
     partitions: &[crate::job::PartitionInfo],
 ) -> Vec<NodeSinfoRow> {
@@ -1559,7 +1285,7 @@ fn build_sinfo_node_rows(
     }]
 }
 
-fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobRecord> {
+pub(crate) fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobRecord> {
     let Some(sort) = sort.map(str::trim).filter(|value| !value.is_empty()) else {
         return jobs;
     };
@@ -1583,7 +1309,7 @@ fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobReco
     jobs
 }
 
-fn resolve_job_reference(config: &AppConfig, value: &str) -> Result<i64> {
+pub(crate) fn resolve_job_reference(config: &AppConfig, value: &str) -> Result<i64> {
     if let Some((parent, step)) = value.split_once('.') {
         let parent_job_id = parent
             .parse::<i64>()
@@ -1625,13 +1351,15 @@ mod tests {
         CORE_RESOURCE_LONG_FLAGS, Cli, ResourceArgs, SUPPORTED_ROOT_COMMANDS,
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
         load_sbatch_env_overrides_with, merge_batch_directives, parse_begin_time,
-        parse_signal_name, parse_time_filter, parse_warning_signal,
+        parse_warning_signal,
     };
     use crate::config::AppConfig;
     use crate::cpu::resolve_cpu_bind_ids;
     use crate::env::resolve_export_spec;
     use crate::job::{JobRecord, JobState, OpenMode};
+    use crate::signals::parse_signal_name;
     use crate::time::now_ts;
+    use crate::time::parse_time_filter;
     use crate::sbatch::BatchDirectives;
 
     #[test]

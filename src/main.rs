@@ -1,5 +1,6 @@
 mod cgroup;
 mod cli;
+mod commands;
 mod config;
 mod cpu;
 mod daemon;
