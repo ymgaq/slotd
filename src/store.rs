@@ -1,5 +1,4 @@
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -9,6 +8,12 @@ use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest, WarningSignal};
 use crate::sbatch::{
     default_batch_output_pattern, expand_output_pattern, parse_array_spec, resolve_log_path,
 };
+use crate::store_support::{
+    default_name, ensure_parent_dir, filter_jobs, join_gpu_ids, order_pending_jobs,
+    parse_export_env_json, parse_gpu_ids, partition_gres_used, partition_state, path_string,
+    script_command,
+};
+use crate::time::now_ts;
 
 const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 
@@ -144,10 +149,10 @@ impl Store {
 
         let job_id = self.conn.last_insert_rowid();
         let job_dir = self.config.jobs_dir.join(job_id.to_string());
-        fs::create_dir_all(&job_dir)?;
+        std::fs::create_dir_all(&job_dir)?;
 
         let script_path = job_dir.join("script.sh");
-        fs::write(&script_path, &request.script_body)?;
+        std::fs::write(&script_path, &request.script_body)?;
 
         let default_stdout = expand_output_pattern(
             default_output_pattern(array_task_id),
@@ -1024,29 +1029,6 @@ fn should_auto_requeue(job: &JobRecord, final_state: JobState) -> bool {
         )
 }
 
-fn now_ts() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-fn default_name(script_name: &str) -> String {
-    Path::new(script_name)
-        .file_name()
-        .and_then(|name| name.to_str())
-        .unwrap_or("batch-job")
-        .to_string()
-}
-
-fn parse_export_env_json(value: &str) -> Result<Vec<(String, String)>> {
-    if value.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-    serde_json::from_str(value).map_err(Into::into)
-}
-
 fn default_output_pattern(array_task_id: Option<i32>) -> &'static str {
     if array_task_id.is_some() {
         "slurm-%A_%a.out"
@@ -1062,69 +1044,6 @@ fn next_step_id_query(conn: &Connection, parent_job_id: i64) -> Result<u32> {
         |row| row.get::<_, i64>(0),
     )?;
     Ok((current + 1).max(0) as u32)
-}
-
-fn order_pending_jobs(mut jobs: Vec<JobRecord>) -> Vec<JobRecord> {
-    jobs.sort_by(|a, b| {
-        b.priority
-            .cmp(&a.priority)
-            .then_with(|| a.submit_time.cmp(&b.submit_time))
-            .then_with(|| a.id.cmp(&b.id))
-    });
-
-    let mut grouped = std::collections::BTreeMap::<i64, Vec<JobRecord>>::new();
-    for job in jobs {
-        let group_key = job.array_job_id.unwrap_or(job.id);
-        grouped.entry(group_key).or_default().push(job);
-    }
-
-    let group_order = grouped
-        .iter()
-        .map(|(group_key, group_jobs)| {
-            let top = &group_jobs[0];
-            (*group_key, top.priority, top.submit_time, top.id)
-        })
-        .collect::<Vec<_>>();
-
-    let mut group_order = group_order;
-    group_order.sort_by(|a, b| {
-        b.1.cmp(&a.1)
-            .then_with(|| a.2.cmp(&b.2))
-            .then_with(|| a.3.cmp(&b.3))
-    });
-
-    let mut ordered = Vec::new();
-    loop {
-        let mut progressed = false;
-        for (group_key, _, _, _) in &group_order {
-            if let Some(group_jobs) = grouped.get_mut(group_key)
-                && !group_jobs.is_empty()
-            {
-                ordered.push(group_jobs.remove(0));
-                progressed = true;
-            }
-        }
-        if !progressed {
-            break;
-        }
-    }
-
-    ordered
-}
-
-fn script_command(script_name: &str) -> String {
-    format!("bash {script_name}")
-}
-
-fn path_string(path: &Path) -> String {
-    path.to_string_lossy().to_string()
-}
-
-fn ensure_parent_dir(path: &Path) -> Result<()> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    Ok(())
 }
 
 fn ensure_column(conn: &Connection, table: &str, column: &str, alter_sql: &str) -> Result<()> {
@@ -1144,115 +1063,13 @@ fn ensure_column(conn: &Connection, table: &str, column: &str, alter_sql: &str) 
     Ok(())
 }
 
-fn join_gpu_ids(ids: &[u32]) -> String {
-    ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
-}
-
-fn parse_gpu_ids(value: &str) -> Result<Vec<u32>> {
-    if value.trim().is_empty() {
-        return Ok(Vec::new());
-    }
-
-    value
-        .split(',')
-        .map(|part| {
-            part.trim()
-                .parse::<u32>()
-                .map_err(|_| SlotdError::from(format!("invalid GPU id list: {value}")))
-        })
-        .collect()
-}
-
-fn filter_jobs(
-    jobs: Vec<JobRecord>,
-    states: Option<&[JobState]>,
-    ids: Option<&[i64]>,
-    user_name: Option<&str>,
-    partitions: Option<&[String]>,
-    start_time: Option<i64>,
-    end_time: Option<i64>,
-) -> Vec<JobRecord> {
-    jobs.into_iter()
-        .filter(|job| {
-            let state_ok = states
-                .map(|states| states.contains(&job.state))
-                .unwrap_or(true);
-            let id_ok = ids.map(|ids| ids.contains(&job.id)).unwrap_or(true);
-            let user_ok = user_name.map(|name| job.user_name == name).unwrap_or(true);
-            let partition_ok = partitions
-                .map(|partitions| {
-                    partitions
-                        .iter()
-                        .any(|partition| partition == &job.partition)
-                })
-                .unwrap_or(true);
-            let start_ok = start_time
-                .map(|start| {
-                    job.submit_time >= start || job.start_time.unwrap_or(job.submit_time) >= start
-                })
-                .unwrap_or(true);
-            let end_ok = end_time
-                .map(|end| {
-                    let effective_end = job.end_time.or(job.start_time).unwrap_or(job.submit_time);
-                    effective_end <= end
-                })
-                .unwrap_or(true);
-            state_ok && id_ok && user_ok && partition_ok && start_ok && end_ok
-        })
-        .collect()
-}
-
-fn partition_state(
-    is_gpu_partition: bool,
-    allocated_cpus: u32,
-    allocated_gpus: u32,
-    total_cpus: u32,
-    total_gpus: u32,
-) -> String {
-    if is_gpu_partition {
-        if allocated_gpus == 0 {
-            "idle".to_string()
-        } else if allocated_gpus >= total_gpus {
-            "alloc".to_string()
-        } else {
-            "mix".to_string()
-        }
-    } else if allocated_cpus == 0 {
-        "idle".to_string()
-    } else if allocated_cpus >= total_cpus {
-        "alloc".to_string()
-    } else {
-        "mix".to_string()
-    }
-}
-
-fn partition_gres_used(
-    is_gpu_partition: bool,
-    gpu_model: &str,
-    total_gpus: u32,
-    ids: &[u32],
-) -> String {
-    if !is_gpu_partition {
-        return "N/A".to_string();
-    }
-
-    let idx = if ids.is_empty() {
-        "IDX:N/A".to_string()
-    } else {
-        format!(
-            "IDX:{}",
-            ids.iter().map(u32::to_string).collect::<Vec<_>>().join(",")
-        )
-    };
-
-    format!("gpu:{gpu_model}:{total_gpus}({idx})")
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{Store, now_ts, order_pending_jobs};
+    use super::Store;
     use crate::config::AppConfig;
     use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
+    use crate::store_support::order_pending_jobs;
+    use crate::time::now_ts;
 
     fn pending_job(
         id: i64,

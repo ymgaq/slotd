@@ -16,6 +16,7 @@ mod runner;
 mod sbatch;
 mod signals;
 mod store;
+mod store_support;
 mod time;
 
 use std::ffi::OsString;
