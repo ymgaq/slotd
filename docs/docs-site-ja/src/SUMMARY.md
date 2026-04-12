@@ -10,5 +10,6 @@
 - [キューと会計情報](queue-and-accounting.md)
 - [ジョブ制御](job-control.md)
 - [ノードとパーティション表示](sinfo.md)
+- [テスト](testing.md)
 - [実行例](examples.md)
 - [トラブルシューティング](troubleshooting.md)

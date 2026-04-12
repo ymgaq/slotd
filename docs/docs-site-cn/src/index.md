@@ -61,5 +61,6 @@
 - [队列与记账信息](queue-and-accounting.md)
 - [作业控制](job-control.md)
 - [节点与分区视图](sinfo.md)
+- [测试](testing.md)
 - [示例](examples.md)
 - [故障排查](troubleshooting.md)

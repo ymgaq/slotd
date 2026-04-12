@@ -607,19 +607,42 @@ SLOTD_ROOT="$HOME/.local/share/slotd" ./target/release/slotd sbatch --wrap 'echo
 
 ## Testing
 
-Run the full test suite:
+`slotd` is primarily covered by Rust integration tests under `tests/`.
+Each test boots an isolated runtime under a temporary `SLOTD_ROOT`, starts its own daemon, and exercises the public Slurm-style commands without touching your normal local state.
+
+Run the full suite:
 
 ```bash
 cargo test
 ```
 
-Run the daemon manually for smoke testing:
+Run one integration test file while iterating on a feature:
+
+```bash
+cargo test --test scheduling
+```
+
+Run one named test case:
+
+```bash
+cargo test dependency_job_waits_for_prerequisite_before_running --test scheduling
+```
+
+Main areas covered by the current suite:
+
+- command basics and CLI output such as `sbatch`, `srun`, `salloc`, `sinfo`, `squeue`, `sacct`, and `scontrol`
+- scheduling behavior including dependencies, arrays, delayed start, resource flags, constraints, and requeue handling
+- interactive and foreground execution paths such as `srun --pty`, `--label`, `--unbuffered`, and allocation/step flows
+- persistence and lifecycle behavior including cancellation, recovery, update processing, warning signals, and output file handling
+- notification and accounting related behavior such as `SLOTD_NOTIFY_CMD` hooks and parsable query output
+
+For a quick manual smoke test, run the daemon in one shell:
 
 ```bash
 cargo run -- daemon
 ```
 
-Submit a quick smoke-test job:
+Then submit a simple job from another shell that uses the same `SLOTD_ROOT`:
 
 ```bash
 cargo run -- sbatch --wrap 'echo hello'

@@ -61,5 +61,6 @@ It is not trying to provide:
 - [Queue and Accounting](queue-and-accounting.md)
 - [Job Control](job-control.md)
 - [Node and Partition View](sinfo.md)
+- [Testing](testing.md)
 - [Examples](examples.md)
 - [Troubleshooting](troubleshooting.md)
