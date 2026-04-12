@@ -48,6 +48,7 @@ The implementation is intentionally Rust-first:
 - local daemon and Unix socket IPC
 - SQLite-backed durable job state
 - CPU, memory, and GPU reservation-based scheduling
+- true single-node multi-task execution for `--ntasks`
 - batch jobs, interactive runs, allocations, and steps
 - dependencies and job arrays
 - `--constraint`, `--begin`, `--exclusive`, `--requeue`
@@ -433,7 +434,7 @@ Expected result:
 | `-J`, `--job-name` | Set the job name |
 | `-p`, `--partition` | Choose a configured partition |
 | `-c`, `--cpus-per-task` | CPUs per task |
-| `-n`, `--ntasks` | Number of tasks |
+| `-n`, `--ntasks` | Number of concurrently launched local tasks |
 | `--mem` | Requested memory, such as `512M` or `8G` |
 | `-t`, `--time` | Time limit |
 | `-G`, `--gpus` | Requested GPU slots |
@@ -460,7 +461,7 @@ Expected result:
 | `-J`, `--job-name` | Set the job name |
 | `-p`, `--partition` | Choose a partition |
 | `-c`, `--cpus-per-task` | CPUs per task |
-| `-n`, `--ntasks` | Number of tasks |
+| `-n`, `--ntasks` | Number of concurrently launched local tasks |
 | `--mem` | Requested memory |
 | `-t`, `--time` | Time limit |
 | `-G`, `--gpus` | Requested GPU slots |
@@ -471,7 +472,7 @@ Expected result:
 | `--pty` | Select the foreground execution path |
 | `--constraint` | Require matching local features |
 | `--cpu-bind` | CPU binding mode: `none`, `cores`, `map_cpu:<ids>` |
-| `--label` | Prefix forwarded output lines with `0: ` |
+| `--label` | Prefix output lines with `<task_id>: ` |
 | `--unbuffered` | Flush forwarded output eagerly |
 | `--no-wait` | Submit a daemon-managed run job instead of waiting |
 
@@ -482,7 +483,7 @@ Expected result:
 | `-J`, `--job-name` | Set the allocation name |
 | `-p`, `--partition` | Choose a partition |
 | `-c`, `--cpus-per-task` | CPUs per task |
-| `-n`, `--ntasks` | Number of tasks |
+| `-n`, `--ntasks` | Number of concurrently launched local tasks |
 | `--mem` | Requested memory |
 | `-t`, `--time` | Time limit |
 | `-G`, `--gpus` | Requested GPU slots |
@@ -554,6 +555,7 @@ Implemented states:
 
 - single-node only
 - reservation-based CPU, memory, and GPU admission
+- `ntasks` launches one local process per task rank for `sbatch`, foreground `srun`, and `salloc` commands
 - pending jobs are ordered primarily by submission order
 - explicit local `Priority` can override that order
 - array tasks are interleaved by array group

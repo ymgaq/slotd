@@ -116,6 +116,7 @@ fn dispatch_request(
             term_signal,
             state_reason,
         } => {
+            runner.forget(job_id);
             let job = store.mark_finished(
                 job_id,
                 state,

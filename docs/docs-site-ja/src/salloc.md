@@ -12,6 +12,9 @@ salloc [options] [command...]
 
 command を指定しない場合は、自分の shell を起動します。
 
+`--ntasks` が `2` 以上の場合、foreground command は task rank ごとに 1 つの
+ローカルプロセスを起動します。
+
 典型的な出力:
 
 ```text
@@ -25,7 +28,7 @@ Granted job allocation 4
 | `-J`, `--job-name <name>` | allocation 名を設定する |
 | `-p`, `--partition <partition>` | partition を選ぶ |
 | `-c`, `--cpus-per-task <n>` | task ごとの CPU 数 |
-| `-n`, `--ntasks <n>` | task 数 |
+| `-n`, `--ntasks <n>` | 同時に起動するローカル task 数 |
 | `--mem <size>` | 要求メモリ |
 | `-t`, `--time <time>` | time limit |
 | `-G`, `--gpus <n>` | 要求 GPU slot 数 |
@@ -45,3 +48,4 @@ salloc -p gpu -c 4 --mem 8G -G 1 -t 00:30:00
 - allocation が実行可能になるまで command が待つ
 - allocation の中で shell が起動する
 - その後の `srun` はその allocation 配下の step になる
+- allocation command は allocation の task 数でローカル multi-task 実行される

@@ -22,6 +22,7 @@ controller と worker の分離はなく、リモートノード起動プロト�
 現在の挙動:
 
 - CPU 予約量は `ntasks * cpus-per-task`
+- `ntasks` は batch と foreground 実行で task rank ごとに 1 つのローカルプロセスを起動する
 - メモリは MB 単位で保存
 - GPU は整数スロット
 - admission は実使用量ではなく予約量ベース

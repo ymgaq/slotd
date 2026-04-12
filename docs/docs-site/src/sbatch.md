@@ -20,6 +20,7 @@ In script mode:
 In `--wrap` mode:
 
 - it creates an internal shell script around the command
+- it launches one local process per task rank when `--ntasks` is greater than `1`
 
 Typical output:
 
@@ -41,7 +42,7 @@ With `--parsable`:
 | `-J`, `--job-name <name>` | Set the job name |
 | `-p`, `--partition <partition>` | Choose a partition |
 | `-c`, `--cpus-per-task <n>` | CPUs per task |
-| `-n`, `--ntasks <n>` | Number of tasks |
+| `-n`, `--ntasks <n>` | Number of concurrently launched local tasks |
 | `--mem <size>` | Requested memory, such as `512M` or `8G` |
 | `-t`, `--time <time>` | Time limit |
 | `-G`, `--gpus <n>` | Requested GPU slots |

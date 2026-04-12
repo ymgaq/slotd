@@ -12,6 +12,9 @@ salloc [options] [command...]
 
 If no command is given, it starts your shell.
 
+When `--ntasks` is greater than `1`, the foreground command launches one local
+process per task rank on the same host.
+
 Typical output:
 
 ```text
@@ -25,7 +28,7 @@ Granted job allocation 4
 | `-J`, `--job-name <name>` | Set the allocation name |
 | `-p`, `--partition <partition>` | Choose a partition |
 | `-c`, `--cpus-per-task <n>` | CPUs per task |
-| `-n`, `--ntasks <n>` | Number of tasks |
+| `-n`, `--ntasks <n>` | Number of concurrently launched local tasks |
 | `--mem <size>` | Requested memory |
 | `-t`, `--time <time>` | Time limit |
 | `-G`, `--gpus <n>` | Requested GPU slots |
@@ -45,3 +48,4 @@ Expected result:
 - the command waits until the allocation is running
 - your shell starts inside the allocation
 - later `srun` commands become steps under that allocation
+- the allocation command uses the allocation task count for local multi-task execution

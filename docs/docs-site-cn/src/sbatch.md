@@ -20,6 +20,7 @@ sbatch [options] --wrap '<command>'
 在 `--wrap` 模式下：
 
 - 为命令生成一个内部 shell 脚本
+- 当 `--ntasks` 大于 `1` 时，会按 task rank 启动一个本地进程
 
 典型输出：
 
@@ -41,7 +42,7 @@ Submitted batch job 1
 | `-J`, `--job-name <name>` | 设置作业名 |
 | `-p`, `--partition <partition>` | 选择分区 |
 | `-c`, `--cpus-per-task <n>` | 每个 task 的 CPU 数 |
-| `-n`, `--ntasks <n>` | task 数量 |
+| `-n`, `--ntasks <n>` | 并发启动的本地 task 数量 |
 | `--mem <size>` | 请求内存，例如 `512M` 或 `8G` |
 | `-t`, `--time <time>` | 时间限制 |
 | `-G`, `--gpus <n>` | 请求 GPU slot 数 |

@@ -74,8 +74,8 @@ fn salloc_resource_flags_are_visible_at_runtime() {
     ]);
     let workdir = runtime.root_dir().join("salloc-workdir");
     fs::create_dir_all(&workdir).expect("create salloc workdir");
-    let pwd_path = runtime.root_dir().join("salloc-pwd.txt");
-    let env_path = runtime.root_dir().join("salloc-env.txt");
+    let task_dir = runtime.root_dir().join("salloc-task-env");
+    fs::create_dir_all(&task_dir).expect("create salloc task dir");
 
     let output = runtime.run_output(&[
         "salloc",
@@ -100,9 +100,8 @@ fn salloc_resource_flags_are_visible_at_runtime() {
         "bash",
         "-lc",
         &format!(
-            "pwd > \"{}\"; printf '%s|%s|%s|%s|%s' \"$SLURM_JOB_ID\" \"$SLURM_JOB_NAME\" \"$SLURM_JOB_PARTITION\" \"$SLURM_NTASKS\" \"$SLURM_CPUS_PER_TASK\" > \"{}\"",
-            pwd_path.display(),
-            env_path.display()
+            "pwd > \"{task_dir}/pwd-$SLURM_PROCID.txt\"; printf '%s|%s|%s|%s|%s|%s' \"$SLURM_JOB_ID\" \"$SLURM_JOB_NAME\" \"$SLURM_JOB_PARTITION\" \"$SLURM_NTASKS\" \"$SLURM_CPUS_PER_TASK\" \"$SLURM_PROCID\" > \"{task_dir}/env-$SLURM_PROCID.txt\"",
+            task_dir = task_dir.display(),
         ),
     ]);
     assert!(
@@ -120,14 +119,18 @@ fn salloc_resource_flags_are_visible_at_runtime() {
         .parse::<i64>()
         .expect("parse allocation job id");
 
-    let pwd = fs::read_to_string(&pwd_path).expect("read salloc pwd");
-    assert_eq!(pwd.trim(), workdir.display().to_string());
+    for procid in 0..2 {
+        let pwd = fs::read_to_string(task_dir.join(format!("pwd-{procid}.txt")))
+            .expect("read salloc pwd");
+        assert_eq!(pwd.trim(), workdir.display().to_string());
 
-    let env = fs::read_to_string(&env_path).expect("read salloc env");
-    assert_eq!(
-        env.trim(),
-        format!("{allocation_job_id}|alloc-check|gpu|2|1")
-    );
+        let env = fs::read_to_string(task_dir.join(format!("env-{procid}.txt")))
+            .expect("read salloc env");
+        assert_eq!(
+            env.trim(),
+            format!("{allocation_job_id}|alloc-check|gpu|2|1|{procid}")
+        );
+    }
 
     let final_state =
         runtime.wait_for_job_state(allocation_job_id, "COMPLETED", Duration::from_secs(10));

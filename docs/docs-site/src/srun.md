@@ -23,6 +23,10 @@ Behavior depends on whether you are already inside an allocation:
 
 Only `--no-wait` submits a daemon-managed run job.
 
+When `--ntasks` is greater than `1`, foreground `srun` launches one local
+process per task rank on the same host and exports task-local ranks through
+`SLURM_PROCID` and `SLURM_LOCALID`.
+
 ## Main Options
 
 | Option | Meaning |
@@ -30,7 +34,7 @@ Only `--no-wait` submits a daemon-managed run job.
 | `-J`, `--job-name <name>` | Set the job name |
 | `-p`, `--partition <partition>` | Choose a partition |
 | `-c`, `--cpus-per-task <n>` | CPUs per task |
-| `-n`, `--ntasks <n>` | Number of tasks |
+| `-n`, `--ntasks <n>` | Number of concurrently launched local tasks |
 | `--mem <size>` | Requested memory |
 | `-t`, `--time <time>` | Time limit |
 | `-G`, `--gpus <n>` | Requested GPU slots |
@@ -41,7 +45,7 @@ Only `--no-wait` submits a daemon-managed run job.
 | `--pty` | Select the foreground execution path |
 | `--constraint <feature>` | Require matching local features |
 | `--cpu-bind <mode>` | Bind CPU affinity |
-| `--label` | Prefix forwarded output with `0: ` |
+| `--label` | Prefix output with `<task_id>: ` |
 | `--unbuffered` | Flush forwarded output eagerly |
 | `--no-wait` | Submit a daemon-managed run job |
 

@@ -22,6 +22,7 @@
 当前行为：
 
 - CPU 预留量等于 `ntasks * cpus-per-task`
+- `ntasks` 会在 batch 和前台执行中按 task rank 启动一个本地进程
 - 内存以 MB 保存
 - GPU 以整数 slot 表示
 - 准入基于预留量，而不是实际使用量

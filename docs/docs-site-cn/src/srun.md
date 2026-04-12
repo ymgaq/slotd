@@ -23,6 +23,9 @@ srun [options] -- <command...>
 
 只有 `--no-wait` 会提交一个由 daemon 管理的 run job。
 
+当 `--ntasks` 大于 `1` 时，前台 `srun` 会在同一台主机上按 task rank 启动一个
+本地进程，并导出 `SLURM_PROCID` 与 `SLURM_LOCALID`。
+
 ## 主要选项
 
 | 选项 | 含义 |
@@ -30,7 +33,7 @@ srun [options] -- <command...>
 | `-J`, `--job-name <name>` | 设置作业名 |
 | `-p`, `--partition <partition>` | 选择分区 |
 | `-c`, `--cpus-per-task <n>` | 每个 task 的 CPU 数 |
-| `-n`, `--ntasks <n>` | task 数量 |
+| `-n`, `--ntasks <n>` | 并发启动的本地 task 数量 |
 | `--mem <size>` | 请求内存 |
 | `-t`, `--time <time>` | 时间限制 |
 | `-G`, `--gpus <n>` | 请求 GPU slot 数 |
@@ -41,7 +44,7 @@ srun [options] -- <command...>
 | `--pty` | 选择前台执行路径 |
 | `--constraint <feature>` | 要求匹配的本地 feature |
 | `--cpu-bind <mode>` | 设置 CPU affinity |
-| `--label` | 在转发输出前加上 `0: ` 前缀 |
+| `--label` | 在输出前加上 `<task_id>: ` 前缀 |
 | `--unbuffered` | 积极 flush 转发输出 |
 | `--no-wait` | 提交 daemon 管理的 run job |
 

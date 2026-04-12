@@ -20,6 +20,7 @@ script mode の場合:
 `--wrap` mode の場合:
 
 - コマンドを包む内部 shell script を生成する
+- `--ntasks` が `2` 以上なら task rank ごとに 1 つのローカルプロセスを起動する
 
 典型的な出力:
 
@@ -41,7 +42,7 @@ Submitted batch job 1
 | `-J`, `--job-name <name>` | job name を設定する |
 | `-p`, `--partition <partition>` | partition を選ぶ |
 | `-c`, `--cpus-per-task <n>` | task ごとの CPU 数 |
-| `-n`, `--ntasks <n>` | task 数 |
+| `-n`, `--ntasks <n>` | 同時に起動するローカル task 数 |
 | `--mem <size>` | 要求メモリ。`512M` や `8G` など |
 | `-t`, `--time <time>` | time limit |
 | `-G`, `--gpus <n>` | 要求 GPU slot 数 |

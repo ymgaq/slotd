@@ -22,6 +22,7 @@ There is no controller/worker split and no remote node launch protocol.
 Current behavior:
 
 - CPU reservation is `ntasks * cpus-per-task`
+- `ntasks` launches one local process per task rank for batch and foreground execution
 - memory is stored in MB
 - GPUs are integer slots
 - admission is reservation-based, not usage-based

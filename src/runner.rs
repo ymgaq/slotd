@@ -15,6 +15,7 @@ use nix::unistd::{Pid, setsid};
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::job::{JobRecord, JobState, OpenMode};
+use crate::launch::{LaunchCommand, build_multitask_launcher};
 use crate::notify::notify_job;
 use crate::store::Store;
 
@@ -59,22 +60,24 @@ impl Runner {
         let status_path = job_status_path(job)
             .ok_or_else(|| crate::error::SlotdError::from("missing script path for daemon job"))?;
         let wrapper_path = job_wrapper_path(job);
-        if !wrapper_path.exists() {
-            std::fs::write(
-                &wrapper_path,
-                format!(
-                    "#!/usr/bin/env bash\n/bin/bash {} \ncode=$?\nprintf '%s\\n' \"$code\" > {}\nexit \"$code\"\n",
-                    shell_quote_path(&job.script_path),
-                    shell_quote_path(&status_path.to_string_lossy())
+        std::fs::write(
+            &wrapper_path,
+            format!(
+                "{}\ncode=$?\nprintf '%s\\n' \"$code\" > {}\nexit \"$code\"\n",
+                build_multitask_launcher(
+                    LaunchCommand::Script(Path::new(&job.script_path)),
+                    job.requested_tasks,
+                    false,
                 ),
-            )?;
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let mut perms = std::fs::metadata(&wrapper_path)?.permissions();
-                perms.set_mode(0o755);
-                std::fs::set_permissions(&wrapper_path, perms)?;
-            }
+                shell_quote_path(&status_path.to_string_lossy())
+            ),
+        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = std::fs::metadata(&wrapper_path)?.permissions();
+            perms.set_mode(0o755);
+            std::fs::set_permissions(&wrapper_path, perms)?;
         }
 
         let mut command = Command::new("/bin/bash");
@@ -89,7 +92,7 @@ impl Runner {
         command.env("SLURM_JOB_PARTITION", &job.partition);
         command.env("SLURM_JOB_NODELIST", store.config().hostname.clone());
         command.env("SLURM_SUBMIT_DIR", &job.cwd);
-        command.env("SLURM_NTASKS", job.requested_tasks.to_string());
+        command.env("SLURM_NTASKS", job.requested_tasks.max(1).to_string());
         command.env("SLURM_CPUS_PER_TASK", job.requested_cpus.to_string());
         if let Some(array_job_id) = job.array_job_id {
             command.env("SLURM_ARRAY_JOB_ID", array_job_id.to_string());
@@ -306,6 +309,10 @@ impl Runner {
             .map_err(|_| crate::error::SlotdError::from(format!("unsupported signal: {signal}")))?;
         let _ = killpg(Pid::from_raw(running.pgid), signal);
         Ok(true)
+    }
+
+    pub fn forget(&mut self, job_id: i64) {
+        self.jobs.remove(&job_id);
     }
 }
 

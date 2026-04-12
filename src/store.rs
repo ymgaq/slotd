@@ -228,7 +228,7 @@ impl Store {
                 dependency, array_job_id, array_task_id, array_task_count, array_task_limit,
                 submit_time, start_time, state_reason, time_limit_secs, begin_time, exclusive, script_path, stdout_path, stderr_path,
                 export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
-            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, 0, 0, 0, 0, 0, NULL, NULL, NULL, NULL, NULL, ?8, ?9, '', NULL, NULL, 0, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL, 0, 0)",
+            ) VALUES (?1, ?2, 0, 0, ?3, ?4, 'RUNNING', ?5, ?6, ?7, ?8, ?9, ?10, ?11, 0, NULL, NULL, NULL, NULL, NULL, ?12, ?13, '', NULL, NULL, 0, '', '', '', '', 'truncate', NULL, NULL, NULL, NULL, 0, 0)",
             params![
                 parent_job_id,
                 next_step_id as i64,
@@ -237,6 +237,10 @@ impl Store {
                 parent.partition,
                 command,
                 cwd,
+                parent.requested_cpus,
+                parent.requested_memory_mb,
+                parent.requested_tasks,
+                parent.requested_gpus,
                 submit_time,
                 submit_time,
             ],

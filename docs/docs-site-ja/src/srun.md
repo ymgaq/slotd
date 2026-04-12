@@ -23,6 +23,10 @@ srun [options] -- <command...>
 
 daemon-managed な run job を投入するのは `--no-wait` の場合だけです。
 
+`--ntasks` が `2` 以上の場合、foreground の `srun` は同じホスト上で task rank
+ごとに 1 つのローカルプロセスを起動し、`SLURM_PROCID` と
+`SLURM_LOCALID` を export します。
+
 ## 主なオプション
 
 | オプション | 意味 |
@@ -30,7 +34,7 @@ daemon-managed な run job を投入するのは `--no-wait` の場合だけで�
 | `-J`, `--job-name <name>` | job name を設定する |
 | `-p`, `--partition <partition>` | partition を選ぶ |
 | `-c`, `--cpus-per-task <n>` | task ごとの CPU 数 |
-| `-n`, `--ntasks <n>` | task 数 |
+| `-n`, `--ntasks <n>` | 同時に起動するローカル task 数 |
 | `--mem <size>` | 要求メモリ |
 | `-t`, `--time <time>` | time limit |
 | `-G`, `--gpus <n>` | 要求 GPU slot 数 |
@@ -41,7 +45,7 @@ daemon-managed な run job を投入するのは `--no-wait` の場合だけで�
 | `--pty` | foreground execution path を選ぶ |
 | `--constraint <feature>` | 一致する local feature を要求する |
 | `--cpu-bind <mode>` | CPU affinity を設定する |
-| `--label` | 転送出力の先頭に `0: ` を付ける |
+| `--label` | 出力の先頭に `<task_id>: ` を付ける |
 | `--unbuffered` | 転送出力を eager に flush する |
 | `--no-wait` | daemon-managed run job として投入する |
 

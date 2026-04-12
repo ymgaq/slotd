@@ -16,6 +16,7 @@ use crate::daemon;
 use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
 use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest, WarningSignal};
+use crate::launch::{LaunchCommand, build_multitask_launcher, shell_join};
 use crate::output::{
     parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
     print_sacct_jobs_delimited, print_sinfo, print_squeue_jobs, print_squeue_jobs_with_options,
@@ -1066,8 +1067,13 @@ fn run_foreground_allocation_with_mode(
     } else {
         None
     };
-    let mut command_builder = Command::new(&command[0]);
-    command_builder.args(&command[1..]);
+    let launcher_script = build_multitask_launcher(
+        LaunchCommand::Command(command),
+        job.requested_tasks,
+        options.io.label_output,
+    );
+    let mut command_builder = Command::new("/bin/bash");
+    command_builder.arg("-lc").arg(launcher_script);
     command_builder.current_dir(&job.cwd);
     command_builder.stdin(Stdio::inherit());
     let io_state = configure_foreground_stdio(
@@ -1075,7 +1081,7 @@ fn run_foreground_allocation_with_mode(
         &job.cwd,
         options.io.stdout_path,
         options.io.stderr_path,
-        options.io.label_output,
+        false,
         options.io.unbuffered,
     )?;
     apply_slurm_env(
@@ -1282,11 +1288,12 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
     )? {
         Response::Submitted { job_id } => job_id,
         Response::Error { message } => {
-            let message = if message == "resources are not currently available for --immediate salloc" {
-                "resources are not currently available for --immediate srun".to_string()
-            } else {
-                message
-            };
+            let message =
+                if message == "resources are not currently available for --immediate salloc" {
+                    "resources are not currently available for --immediate srun".to_string()
+                } else {
+                    message
+                };
             return Err(SlotdError::from(message));
         }
         other => {
@@ -1365,7 +1372,7 @@ fn apply_slurm_env(command: &mut Command, config: &AppConfig, job: &JobRecord) {
     command.env("SLURM_JOB_PARTITION", &job.partition);
     command.env("SLURM_JOB_NODELIST", &config.hostname);
     command.env("SLURM_SUBMIT_DIR", &job.cwd);
-    command.env("SLURM_NTASKS", job.requested_tasks.to_string());
+    command.env("SLURM_NTASKS", job.requested_tasks.max(1).to_string());
     command.env("SLURM_CPUS_PER_TASK", job.requested_cpus.to_string());
     if let Some(array_job_id) = job.array_job_id {
         command.env("SLURM_ARRAY_JOB_ID", array_job_id.to_string());
@@ -1613,8 +1620,13 @@ fn run_foreground_step(
     options: ForegroundExecutionOptions<'_>,
 ) -> Result<()> {
     let step = start_step_record(config, job, command)?;
-    let mut command_builder = Command::new(&command[0]);
-    command_builder.args(&command[1..]);
+    let launcher_script = build_multitask_launcher(
+        LaunchCommand::Command(command),
+        step.requested_tasks.max(1),
+        options.io.label_output,
+    );
+    let mut command_builder = Command::new("/bin/bash");
+    command_builder.arg("-lc").arg(launcher_script);
     command_builder.current_dir(&job.cwd);
     command_builder.stdin(Stdio::inherit());
     let io_state = configure_foreground_stdio(
@@ -1622,7 +1634,7 @@ fn run_foreground_step(
         &job.cwd,
         options.io.stdout_path,
         options.io.stderr_path,
-        options.io.label_output,
+        false,
         options.io.unbuffered,
     )?;
     apply_slurm_env(&mut command_builder, config, &step);
@@ -1805,28 +1817,6 @@ fn print_scontrol_job(config: &AppConfig, job: &JobRecord, steps: &[JobRecord]) 
             .join(", ");
         println!("   Steps={summary}");
     }
-}
-
-fn shell_join(args: &[String]) -> String {
-    args.iter()
-        .map(|arg| shell_quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn shell_quote(value: &str) -> String {
-    if value.is_empty() {
-        return "''".to_string();
-    }
-
-    if value
-        .chars()
-        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '-' | '.' | ':'))
-    {
-        return value.to_string();
-    }
-
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn command_basename(command: &str) -> String {
