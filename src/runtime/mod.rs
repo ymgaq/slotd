@@ -7,5 +7,6 @@ pub mod launch;
 pub mod notify;
 pub mod recovery;
 pub mod runner;
+pub mod runner_support;
 pub mod slurm_env;
 pub mod terminal;

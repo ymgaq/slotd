@@ -1,14 +1,13 @@
 use std::collections::HashMap;
+use std::fs::File;
 use std::fs::OpenOptions;
-use std::fs::{self, File};
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
-use nix::errno::Errno;
-use nix::sys::signal::{Signal, kill, killpg};
+use nix::sys::signal::{Signal, killpg};
 use nix::unistd::{Pid, setsid};
 
 use crate::app::config::AppConfig;
@@ -18,6 +17,10 @@ use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
 use crate::runtime::notify::notify_job;
+use crate::runtime::runner_support::{
+    job_cgroup_path, process_group_alive, read_process_rss_kb, recovered_terminal_state,
+    wait_for_group_exit,
+};
 use crate::runtime::slurm_env::apply_slurm_env;
 use crate::runtime::terminal::{exit_signal, terminal_state_with_reasons};
 use crate::store::Store;
@@ -41,6 +44,8 @@ enum JobHandle {
 pub struct Runner {
     jobs: HashMap<i64, RunningJob>,
 }
+
+pub(crate) use crate::runtime::runner_support::process_group_alive_for_recovery;
 
 impl Runner {
     pub fn new() -> Self {
@@ -384,34 +389,6 @@ impl Runner {
     }
 }
 
-fn process_group_alive(pgid: i32) -> Result<bool> {
-    if pgid <= 0 {
-        return Ok(false);
-    }
-
-    match kill(Pid::from_raw(-pgid), None) {
-        Ok(()) => Ok(true),
-        Err(Errno::EPERM) => Ok(true),
-        Err(Errno::ESRCH) => Ok(false),
-        Err(error) => Err(error.into()),
-    }
-}
-
-fn wait_for_group_exit(pgid: i32, timeout_secs: u64) -> Result<()> {
-    let retries = std::cmp::max(1, timeout_secs * 10);
-    for _ in 0..retries {
-        if !process_group_alive(pgid)? {
-            return Ok(());
-        }
-        thread::sleep(Duration::from_millis(100));
-    }
-    Ok(())
-}
-
-pub fn process_group_alive_for_recovery(pgid: i32) -> Result<bool> {
-    process_group_alive(pgid)
-}
-
 fn open_output_file(path: &str, open_mode: OpenMode) -> Result<File> {
     let mut options = OpenOptions::new();
     options.create(true).write(true);
@@ -445,45 +422,6 @@ fn job_wrapper_path(job: &JobRecord) -> PathBuf {
         .join("runner.sh")
 }
 
-fn recovered_terminal_state(
-    status_path: &Option<PathBuf>,
-    cgroup_path: Option<&Path>,
-) -> (JobState, Option<i32>, &'static str) {
-    if cgroup_oomed(cgroup_path) {
-        return (JobState::OutOfMemory, None, "OutOfMemory");
-    }
-    if let Some(exit_code) = status_path
-        .as_ref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-        .and_then(|value| value.trim().parse::<i32>().ok())
-    {
-        return match exit_code {
-            0 => (JobState::Completed, Some(0), "Completed"),
-            code => (JobState::Failed, Some(code), "NonZeroExitCode"),
-        };
-    }
-    (JobState::Failed, None, "LostAfterRestart")
-}
-
 fn shell_quote_path(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn job_cgroup_path(config: &AppConfig, job_id: i64) -> Option<PathBuf> {
-    config
-        .cgroup_base
-        .as_ref()
-        .map(|base| base.join(format!("slotd-{job_id}")))
-}
-
-fn read_process_rss_kb(pid: i32) -> Option<u64> {
-    let contents = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
-    contents.lines().find_map(|line| {
-        if !(line.starts_with("VmHWM:") || line.starts_with("VmRSS:")) {
-            return None;
-        }
-        line.split_whitespace()
-            .nth(1)
-            .and_then(|value| value.parse::<u64>().ok())
-    })
 }

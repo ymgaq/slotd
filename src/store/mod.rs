@@ -1,9 +1,13 @@
 mod allocation;
+mod control_updates;
 mod creation;
+mod listing;
+mod lookup;
 mod query;
 mod reporting;
 mod row;
 mod schema;
+mod state_updates;
 pub(crate) mod support;
 mod updates;
 
