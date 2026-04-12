@@ -37,10 +37,11 @@ jobs:
 
       - name: Assemble Pages artifact
         run: |
-          mkdir -p public/ja public/cn
+          mkdir -p public/ja public/cn public/assets
           cp -r docs/docs-site/book/* public/
           cp -r docs/docs-site-ja/book/* public/ja/
           cp -r docs/docs-site-cn/book/* public/cn/
+          cp assets/slotd.png public/assets/
 
       - uses: actions/configure-pages@v5
 

@@ -1,5 +1,7 @@
 # slotd
 
+![slotd](/slotd/assets/slotd.png)
+
 `slotd` は、Rust で実装された単一ノード・単一ユーザー向けの Slurm 風スケジューラです。
 
 他言語のドキュメント:

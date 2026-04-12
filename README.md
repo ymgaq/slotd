@@ -1,5 +1,7 @@
 # slotd
 
+![slotd](assets/slotd.png)
+
 `slotd` is a Rust-built single-node, single-user Slurm-style job scheduler for a personal workstation.
 
 It keeps the familiar Slurm command names and many common flags, but runs everything on one local machine with a small Rust codebase and:

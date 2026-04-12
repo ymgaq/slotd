@@ -1,5 +1,7 @@
 # slotd
 
+![slotd](/slotd/assets/slotd.png)
+
 `slotd` is a Rust-based, single-node, single-user scheduler with a Slurm-style command surface.
 
 Other languages:
