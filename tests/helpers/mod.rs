@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::thread;
@@ -83,6 +85,25 @@ impl TestRuntime {
             );
             thread::sleep(Duration::from_millis(100));
         }
+    }
+
+    pub fn assert_job_state_stable(&self, job_id: i64, expected_state: &str, duration: Duration) {
+        let deadline = Instant::now() + duration;
+        loop {
+            let state = self.job_state(job_id);
+            assert_eq!(
+                state, expected_state,
+                "job {job_id} changed state during stability check; expected {expected_state}, got {state}"
+            );
+            if Instant::now() >= deadline {
+                return;
+            }
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
+    pub fn scontrol_show_job(&self, job_id: i64) -> String {
+        self.run_checked(&["scontrol", "show", "job", &job_id.to_string()])
     }
 
     pub fn root_dir(&self) -> &Path {
