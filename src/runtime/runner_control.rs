@@ -17,9 +17,9 @@ pub(crate) fn enforce_timeouts(
     config: &AppConfig,
     store: &Store,
 ) -> Result<()> {
-    for job_id in timed_out_jobs(store, runner.jobs()) {
+    for job_id in timed_out_jobs(store, &runner.jobs) {
         terminate_tracked_job(
-            runner.jobs_mut(),
+            &mut runner.jobs,
             config,
             store,
             job_id,
@@ -29,14 +29,14 @@ pub(crate) fn enforce_timeouts(
     }
 
     let jobs_to_warn = runner
-        .jobs()
+        .jobs
         .iter()
         .filter_map(|(&job_id, running)| (!running.warning_signal_sent).then_some(job_id))
         .collect::<Vec<_>>();
     for job_id in jobs_to_warn {
-        if let Some(signal) = warning_signal_to_send(store, runner.jobs(), job_id)? {
-            signal_running_job(runner.jobs(), job_id, signal)?;
-            if let Some(running) = runner.jobs_mut().get_mut(&job_id) {
+        if let Some(signal) = warning_signal_to_send(store, &runner.jobs, job_id)? {
+            signal_running_job(&runner.jobs, job_id, signal)?;
+            if let Some(running) = runner.jobs.get_mut(&job_id) {
                 running.warning_signal_sent = true;
             }
         }
@@ -55,12 +55,12 @@ pub(crate) fn cancel_job(
         return Ok(true);
     }
 
-    if !runner.jobs().contains_key(&job_id) {
+    if !runner.jobs.contains_key(&job_id) {
         return Ok(false);
     }
 
     terminate_tracked_job(
-        runner.jobs_mut(),
+        &mut runner.jobs,
         config,
         store,
         job_id,

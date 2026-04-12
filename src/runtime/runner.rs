@@ -26,7 +26,7 @@ pub(crate) enum JobHandle {
 }
 
 pub struct Runner {
-    jobs: HashMap<i64, RunningJob>,
+    pub(in crate::runtime) jobs: HashMap<i64, RunningJob>,
 }
 
 pub(crate) use crate::runtime::runner_support::process_group_alive_for_recovery;
@@ -84,13 +84,5 @@ impl Runner {
 
     pub fn forget(&mut self, job_id: i64) {
         self.jobs.remove(&job_id);
-    }
-
-    pub(crate) fn jobs(&self) -> &HashMap<i64, RunningJob> {
-        &self.jobs
-    }
-
-    pub(crate) fn jobs_mut(&mut self) -> &mut HashMap<i64, RunningJob> {
-        &mut self.jobs
     }
 }

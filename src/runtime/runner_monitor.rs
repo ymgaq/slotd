@@ -12,7 +12,7 @@ use crate::store::Store;
 
 pub(crate) fn reconcile_adopted(runner: &mut Runner, store: &Store) -> Result<()> {
     let mut finished = Vec::new();
-    for (&job_id, running) in runner.jobs() {
+    for (&job_id, running) in &runner.jobs {
         if let JobHandle::Adopted = running.handle
             && !process_group_alive(running.pgid)?
         {
@@ -27,25 +27,25 @@ pub(crate) fn reconcile_adopted(runner: &mut Runner, store: &Store) -> Result<()
         }
     }
 
-    forget_finished_jobs(runner.jobs_mut(), finished);
+    forget_finished_jobs(&mut runner.jobs, finished);
     Ok(())
 }
 
 pub(crate) fn poll(runner: &mut Runner, store: &Store) -> Result<()> {
     let mut finished = Vec::new();
-    for (&job_id, running) in runner.jobs_mut() {
-        update_max_rss(store, job_id, running)?;
+    for (job_id, running) in runner.jobs.iter_mut() {
+        update_max_rss(store, *job_id, running)?;
         if let Some((state, exit_code, term_signal, reason)) = poll_child_completion(running)? {
-            let job = store.mark_finished(job_id, state, exit_code, term_signal, Some(reason))?;
+            let job = store.mark_finished(*job_id, state, exit_code, term_signal, Some(reason))?;
             if job.state.is_terminal() {
                 notify_job(store.config(), &job)?;
             }
             cleanup_cgroup(running.cgroup_path.as_deref());
-            finished.push(job_id);
+            finished.push(*job_id);
         }
     }
 
-    forget_finished_jobs(runner.jobs_mut(), finished);
+    forget_finished_jobs(&mut runner.jobs, finished);
     Ok(())
 }
 

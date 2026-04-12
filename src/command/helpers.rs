@@ -4,7 +4,6 @@ use std::path::PathBuf;
 use crate::app::config::AppConfig;
 use crate::app::error::{Result, SlotdError};
 use crate::command::args::SbatchEnvOverrides;
-use crate::format::NodeSinfoRow;
 use crate::model::display::{format_exit_status, format_job_alloc_tres, format_job_req_tres};
 use crate::model::job::{JobRecord, JobState, PartitionInfo};
 use crate::proto::ipc::{Request, Response, send_request};
@@ -199,106 +198,6 @@ pub(crate) fn filter_partitions(
                 .unwrap_or(true)
         })
         .collect()
-}
-
-pub(crate) fn build_sinfo_node_rows(
-    config: &AppConfig,
-    partitions: &[PartitionInfo],
-) -> Vec<NodeSinfoRow> {
-    if partitions.is_empty() {
-        return Vec::new();
-    }
-
-    let partitions_text = partitions
-        .iter()
-        .map(|partition| {
-            if partition.name == config.default_partition() {
-                format!("{}*", partition.name)
-            } else {
-                partition.name.clone()
-            }
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let hostname = partitions[0].hostname.clone();
-    let features = partitions
-        .iter()
-        .map(|partition| partition.features.as_str())
-        .find(|value| !value.is_empty())
-        .unwrap_or("")
-        .to_string();
-    let total_cpus = partitions
-        .iter()
-        .map(|partition| partition.total_cpus)
-        .max()
-        .unwrap_or(0);
-    let allocated_cpus = partitions
-        .iter()
-        .map(|partition| partition.allocated_cpus)
-        .sum();
-    let total_memory_mb = partitions
-        .iter()
-        .map(|partition| partition.total_memory_mb)
-        .max()
-        .unwrap_or(0);
-    let allocated_memory_mb = partitions
-        .iter()
-        .map(|partition| partition.allocated_memory_mb)
-        .sum();
-    let total_gpus = partitions
-        .iter()
-        .map(|partition| partition.total_gpus)
-        .max()
-        .unwrap_or(0);
-    let allocated_gpus = partitions
-        .iter()
-        .map(|partition| partition.allocated_gpus)
-        .sum();
-    let running_jobs = partitions
-        .iter()
-        .map(|partition| partition.running_jobs)
-        .sum();
-    let pending_jobs = partitions
-        .iter()
-        .map(|partition| partition.pending_jobs)
-        .sum();
-    let gres_used = partitions
-        .iter()
-        .find(|partition| partition.gres_used != "N/A")
-        .map(|partition| partition.gres_used.clone())
-        .unwrap_or_else(|| "N/A".to_string());
-    let state = if partitions.iter().any(|partition| partition.state == "mix") {
-        "mix".to_string()
-    } else if partitions
-        .iter()
-        .any(|partition| partition.state == "alloc")
-        && partitions.iter().any(|partition| partition.state == "idle")
-    {
-        "mix".to_string()
-    } else if partitions
-        .iter()
-        .any(|partition| partition.state == "alloc")
-    {
-        "alloc".to_string()
-    } else {
-        "idle".to_string()
-    };
-
-    vec![NodeSinfoRow {
-        partitions: partitions_text,
-        hostname,
-        state,
-        gres_used,
-        features,
-        total_cpus,
-        allocated_cpus,
-        total_memory_mb,
-        allocated_memory_mb,
-        total_gpus,
-        allocated_gpus,
-        running_jobs,
-        pending_jobs,
-    }]
 }
 
 pub(crate) fn sort_squeue_jobs(mut jobs: Vec<JobRecord>, sort: Option<&str>) -> Vec<JobRecord> {

@@ -1,23 +1,9 @@
-use crate::app::error::{Result, SlotdError};
-use crate::store::support::parse_gpu_ids;
-
 use super::Store;
+use crate::app::error::{Result, SlotdError};
 
 impl Store {
     pub fn running_resource_usage(&self) -> Result<(u32, u64, u32)> {
-        let mut stmt = self.conn.prepare(
-            "SELECT COALESCE(SUM(requested_cpus * requested_tasks), 0), COALESCE(SUM(requested_memory_mb), 0),
-                    COALESCE(SUM(requested_gpus), 0)
-             FROM jobs
-             WHERE state = 'RUNNING' AND parent_job_id IS NULL",
-        )?;
-        let (cpus, mem, gpus) = stmt.query_row([], |row| {
-            let cpus: u32 = row.get(0)?;
-            let mem: u64 = row.get(1)?;
-            let gpus: u32 = row.get(2)?;
-            Ok((cpus, mem, gpus))
-        })?;
-        Ok((cpus, mem, gpus))
+        self.running_usage_totals(None)
     }
 
     pub fn available_resources(&self) -> Result<(u32, u64, u32)> {
@@ -34,7 +20,7 @@ impl Store {
             return Ok(Vec::new());
         }
 
-        let mut used = self.used_gpu_ids()?;
+        let mut used = self.gpu_ids_in_use(None)?;
         used.sort_unstable();
 
         let mut assigned = Vec::new();
@@ -54,17 +40,5 @@ impl Store {
                 "not enough free GPU IDs to satisfy the request",
             ))
         }
-    }
-
-    fn used_gpu_ids(&self) -> Result<Vec<u32>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT assigned_gpus FROM jobs WHERE state = 'RUNNING' AND parent_job_id IS NULL AND assigned_gpus <> ''",
-        )?;
-        let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
-        let mut ids = Vec::new();
-        for row in rows {
-            ids.extend(parse_gpu_ids(&row?)?);
-        }
-        Ok(ids)
     }
 }

@@ -6,7 +6,10 @@ mod table;
 #[allow(unused_imports)]
 pub use sacct::{SacctField, parse_sacct_fields, print_sacct_jobs, print_sacct_jobs_delimited};
 #[allow(unused_imports)]
-pub use sinfo::{NodeSinfoRow, SinfoField, parse_sinfo_fields, print_sinfo, print_sinfo_nodes};
+pub use sinfo::{
+    NodeSinfoRow, SinfoField, build_sinfo_node_rows, parse_sinfo_fields, print_sinfo,
+    print_sinfo_nodes,
+};
 pub use squeue::{
     SqueueField, parse_squeue_fields, print_squeue_jobs, print_squeue_jobs_with_options,
     print_squeue_jobs_with_start_times,

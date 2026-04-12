@@ -1,4 +1,5 @@
 mod allocation;
+mod array_creation;
 mod control_updates;
 mod job_creation;
 mod job_paths;
@@ -8,6 +9,7 @@ mod node_reporting;
 mod partition_reporting;
 mod partition_stats;
 mod query;
+mod resource_accounting;
 mod row;
 mod schema;
 mod state_updates;
