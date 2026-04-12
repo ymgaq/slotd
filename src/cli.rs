@@ -13,10 +13,12 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::config::AppConfig;
+use crate::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
 use crate::daemon;
+use crate::env::{parse_env_flag, resolve_export_env};
 use crate::error::{Result, SlotdError};
 use crate::ipc::{Request, Response, send_request};
-use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest, WarningSignal};
+use crate::job::{JobRecord, JobState, OpenMode, SubmitRequest};
 use crate::launch::{LaunchCommand, build_multitask_launcher, shell_join};
 use crate::output::{
     NodeSinfoRow, parse_sacct_fields, parse_sinfo_fields, parse_squeue_fields, print_sacct_jobs,
@@ -24,6 +26,8 @@ use crate::output::{
     print_squeue_jobs_with_options, print_squeue_jobs_with_start_times,
 };
 use crate::sbatch::{BatchDirectives, parse_directives, parse_mem_mb, parse_time_limit_secs};
+use crate::signals::{parse_signal_name, parse_warning_signal};
+use crate::time::{format_duration_secs, format_timestamp, now_ts, parse_begin_time, parse_time_filter};
 
 #[cfg(test)]
 const SUPPORTED_ROOT_COMMANDS: &[&str] = &[
@@ -1544,64 +1548,6 @@ fn spawn_output_forwarder(
     }))
 }
 
-fn resolve_cpu_bind_ids(
-    value: Option<&str>,
-    total_cpus: u32,
-    requested_cpus: u32,
-) -> Result<Option<Vec<usize>>> {
-    let Some(value) = value.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(None);
-    };
-    let normalized = value.to_ascii_lowercase();
-    if normalized == "none" {
-        return Ok(None);
-    }
-    if normalized == "cores" {
-        let limit = requested_cpus.min(total_cpus).max(1);
-        return Ok(Some((0..limit as usize).collect()));
-    }
-    if let Some(list) = normalized.strip_prefix("map_cpu:") {
-        let mut cpus = Vec::new();
-        for part in list
-            .split(',')
-            .map(str::trim)
-            .filter(|part| !part.is_empty())
-        {
-            let cpu = part
-                .parse::<usize>()
-                .map_err(|_| SlotdError::from(format!("invalid cpu-bind cpu id: {part}")))?;
-            if cpu >= total_cpus as usize {
-                return Err(SlotdError::from(format!(
-                    "cpu-bind cpu id {cpu} exceeds available CPUs"
-                )));
-            }
-            cpus.push(cpu);
-        }
-        if cpus.is_empty() {
-            return Err(SlotdError::from(
-                "cpu-bind map_cpu requires at least one CPU id",
-            ));
-        }
-        cpus.sort_unstable();
-        cpus.dedup();
-        return Ok(Some(cpus));
-    }
-    Err(SlotdError::from(format!(
-        "unsupported cpu-bind value: {value}; supported: none, cores, map_cpu:<ids>"
-    )))
-}
-
-fn apply_cpu_affinity(cpu_ids: &[usize]) -> Result<()> {
-    let mut cpu_set = nix::sched::CpuSet::new();
-    for &cpu_id in cpu_ids {
-        cpu_set
-            .set(cpu_id)
-            .map_err(|error| SlotdError::from(error.to_string()))?;
-    }
-    nix::sched::sched_setaffinity(nix::unistd::Pid::from_raw(0), &cpu_set)
-        .map_err(|error| SlotdError::from(error.to_string()))
-}
-
 fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
     let Ok(value) = std::env::var("SLURM_JOB_ID") else {
         return Ok(None);
@@ -1878,14 +1824,6 @@ fn parse_states(values: Vec<String>) -> Result<Vec<JobState>> {
         .collect()
 }
 
-fn parse_begin_time(value: &str) -> Result<i64> {
-    let trimmed = value.trim();
-    if let Some(offset) = trimmed.strip_prefix("now+") {
-        return Ok(now_ts().saturating_add(parse_time_limit_secs(offset)? as i64));
-    }
-    parse_time_filter(trimmed)
-}
-
 fn validate_constraint(config: &AppConfig, value: &str, partition: &str) -> Result<()> {
     if config.matches_constraint(value, partition) {
         Ok(())
@@ -1986,149 +1924,6 @@ fn merge_batch_directives(
     }
 }
 
-fn resolve_export_env(
-    export: Option<&str>,
-    export_file: Option<&Path>,
-) -> Result<Vec<(String, String)>> {
-    let mut env = Vec::<(String, String)>::new();
-    if let Some(path) = export_file {
-        let contents = fs::read_to_string(path)?;
-        env.extend(parse_export_file_contents(&contents)?);
-    }
-    if let Some(spec) = export {
-        env = resolve_export_spec(spec, &env)?;
-    }
-    env.sort_by(|a, b| a.0.cmp(&b.0));
-    env.dedup_by(|a, b| a.0 == b.0);
-    Ok(env)
-}
-
-fn parse_env_flag(value: &str) -> bool {
-    matches!(
-        value.trim().to_ascii_lowercase().as_str(),
-        "1" | "true" | "yes"
-    )
-}
-
-fn parse_export_file_contents(contents: &str) -> Result<Vec<(String, String)>> {
-    let mut env = Vec::new();
-    for line in contents.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let Some((key, value)) = line.split_once('=') else {
-            return Err(SlotdError::from(format!(
-                "invalid export-file entry: {line}"
-            )));
-        };
-        validate_env_name(key)?;
-        env.push((key.to_string(), value.to_string()));
-    }
-    Ok(env)
-}
-
-fn resolve_export_spec(spec: &str, seed: &[(String, String)]) -> Result<Vec<(String, String)>> {
-    let trimmed = spec.trim();
-    if trimmed.eq_ignore_ascii_case("none") {
-        return Ok(Vec::new());
-    }
-
-    let mut env = if trimmed.eq_ignore_ascii_case("all") || trimmed.starts_with("ALL,") {
-        std::env::vars().collect::<Vec<_>>()
-    } else {
-        seed.to_vec()
-    };
-    let entries = trimmed
-        .split(',')
-        .map(str::trim)
-        .filter(|entry| !entry.is_empty())
-        .collect::<Vec<_>>();
-
-    for entry in entries {
-        if entry.eq_ignore_ascii_case("all") {
-            continue;
-        }
-        if entry.eq_ignore_ascii_case("none") {
-            env.clear();
-            continue;
-        }
-        if let Some((key, value)) = entry.split_once('=') {
-            validate_env_name(key)?;
-            upsert_env_pair(&mut env, key, value);
-            continue;
-        }
-        validate_env_name(entry)?;
-        let value = std::env::var(entry).unwrap_or_default();
-        upsert_env_pair(&mut env, entry, &value);
-    }
-
-    Ok(env)
-}
-
-fn upsert_env_pair(env: &mut Vec<(String, String)>, key: &str, value: &str) {
-    if let Some(existing) = env.iter_mut().find(|(name, _)| name == key) {
-        existing.1 = value.to_string();
-    } else {
-        env.push((key.to_string(), value.to_string()));
-    }
-}
-
-fn validate_env_name(value: &str) -> Result<()> {
-    if value.is_empty()
-        || !value
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-        || value.chars().next().is_some_and(|ch| ch.is_ascii_digit())
-    {
-        return Err(SlotdError::from(format!(
-            "invalid environment variable name: {value}"
-        )));
-    }
-    Ok(())
-}
-
-fn parse_warning_signal(value: &str) -> Result<WarningSignal> {
-    let trimmed = value.trim();
-    let trimmed = trimmed.strip_prefix("B:").unwrap_or(trimmed);
-    let (signal_name, seconds_before_end) = match trimmed.split_once('@') {
-        Some((signal_name, seconds_before_end)) => (
-            signal_name,
-            seconds_before_end
-                .parse::<u64>()
-                .map_err(|_| SlotdError::from(format!("invalid signal offset: {trimmed}")))?,
-        ),
-        None => (trimmed, 60),
-    };
-    Ok(WarningSignal {
-        signal: parse_signal_name(signal_name)?,
-        seconds_before_end,
-    })
-}
-
-fn parse_signal_name(value: &str) -> Result<i32> {
-    let normalized = value.trim().trim_start_matches("SIG").to_ascii_uppercase();
-    let signal = match normalized.as_str() {
-        "TERM" => nix::sys::signal::Signal::SIGTERM,
-        "KILL" => nix::sys::signal::Signal::SIGKILL,
-        "INT" => nix::sys::signal::Signal::SIGINT,
-        "HUP" => nix::sys::signal::Signal::SIGHUP,
-        "QUIT" => nix::sys::signal::Signal::SIGQUIT,
-        "USR1" => nix::sys::signal::Signal::SIGUSR1,
-        "USR2" => nix::sys::signal::Signal::SIGUSR2,
-        "CONT" => nix::sys::signal::Signal::SIGCONT,
-        "STOP" => nix::sys::signal::Signal::SIGSTOP,
-        "TSTP" => nix::sys::signal::Signal::SIGTSTP,
-        "ALRM" => nix::sys::signal::Signal::SIGALRM,
-        other => {
-            if let Ok(number) = other.parse::<i32>() {
-                return Ok(number);
-            }
-            return Err(SlotdError::from(format!("unsupported signal: {value}")));
-        }
-    };
-    Ok(signal as i32)
-}
 
 fn estimate_start_times(
     config: &AppConfig,
@@ -2186,14 +1981,6 @@ fn estimate_start_times(
     result
 }
 
-fn now_ts() -> i64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 fn parse_state(value: &str) -> Result<JobState> {
     let normalized = value.trim().to_ascii_uppercase();
     match normalized.as_str() {
@@ -2207,20 +1994,6 @@ fn parse_state(value: &str) -> Result<JobState> {
         "OOM" | "OUT_OF_MEMORY" => Ok(JobState::OutOfMemory),
         _ => Err(SlotdError::from(format!("unknown state: {value}"))),
     }
-}
-
-fn parse_time_filter(value: &str) -> Result<i64> {
-    if let Ok(ts) = value.parse::<i64>() {
-        return Ok(ts);
-    }
-
-    if let Some((year, month, day, hour, minute, second)) = parse_datetime_parts(value) {
-        return datetime_to_epoch(year, month, day, hour, minute, second);
-    }
-
-    Err(SlotdError::from(format!(
-        "unsupported time format: {value}"
-    )))
 }
 
 fn filter_partitions(
@@ -2387,91 +2160,6 @@ fn resolve_job_reference(config: &AppConfig, value: &str) -> Result<i64> {
         .map_err(|_| SlotdError::from(format!("invalid job id: {value}")))
 }
 
-fn parse_datetime_parts(value: &str) -> Option<(i32, u32, u32, u32, u32, u32)> {
-    if let Some((date, time)) = value.split_once('T').or_else(|| value.split_once(' ')) {
-        let (year, month, day) = parse_date(date)?;
-        let (hour, minute, second) = parse_time(time)?;
-        return Some((year, month, day, hour, minute, second));
-    }
-
-    let (year, month, day) = parse_date(value)?;
-    Some((year, month, day, 0, 0, 0))
-}
-
-fn parse_date(value: &str) -> Option<(i32, u32, u32)> {
-    let mut parts = value.split('-');
-    let year = parts.next()?.parse().ok()?;
-    let month = parts.next()?.parse().ok()?;
-    let day = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((year, month, day))
-}
-
-fn parse_time(value: &str) -> Option<(u32, u32, u32)> {
-    let mut parts = value.split(':');
-    let hour = parts.next()?.parse().ok()?;
-    let minute = parts.next()?.parse().ok()?;
-    let second = parts.next()?.parse().ok()?;
-    if parts.next().is_some() {
-        return None;
-    }
-    Some((hour, minute, second))
-}
-
-fn datetime_to_epoch(
-    year: i32,
-    month: u32,
-    day: u32,
-    hour: u32,
-    minute: u32,
-    second: u32,
-) -> Result<i64> {
-    if !(1..=12).contains(&month)
-        || !(1..=31).contains(&day)
-        || hour > 23
-        || minute > 59
-        || second > 59
-    {
-        return Err(SlotdError::from("invalid date or time"));
-    }
-
-    let days = days_from_civil(year, month, day).ok_or_else(|| SlotdError::from("invalid date"))?;
-    Ok(days * 86_400 + hour as i64 * 3_600 + minute as i64 * 60 + second as i64)
-}
-
-fn days_from_civil(year: i32, month: u32, day: u32) -> Option<i64> {
-    if day > days_in_month(year, month)? {
-        return None;
-    }
-
-    let mut year = year as i64;
-    let month = month as i64;
-    let day = day as i64;
-    year -= if month <= 2 { 1 } else { 0 };
-    let era = if year >= 0 { year } else { year - 399 } / 400;
-    let yoe = year - era * 400;
-    let doy = (153 * (month + if month > 2 { -3 } else { 9 }) + 2) / 5 + day - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    Some(era * 146_097 + doe - 719_468)
-}
-
-fn days_in_month(year: i32, month: u32) -> Option<u32> {
-    let days = match month {
-        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-        4 | 6 | 9 | 11 => 30,
-        2 if is_leap_year(year) => 29,
-        2 => 28,
-        _ => return None,
-    };
-    Some(days)
-}
-
-fn is_leap_year(year: i32) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
-}
-
 fn format_exit_status(job: &JobRecord) -> String {
     format!(
         "{}:{}",
@@ -2484,49 +2172,6 @@ fn format_optional_timestamp(value: Option<i64>) -> String {
     value
         .map(format_timestamp)
         .unwrap_or_else(|| "Unknown".to_string())
-}
-
-fn format_timestamp(value: i64) -> String {
-    let (year, month, day, hour, minute, second) = civil_from_epoch(value);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}")
-}
-
-fn civil_from_epoch(timestamp: i64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = timestamp.div_euclid(86_400);
-    let secs = timestamp.rem_euclid(86_400) as u32;
-    let (year, month, day) = civil_from_days(days);
-    let hour = secs / 3_600;
-    let minute = (secs % 3_600) / 60;
-    let second = secs % 60;
-    (year, month, day, hour, minute, second)
-}
-
-fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if month <= 2 { 1 } else { 0 };
-    (year as i32, month as u32, day as u32)
-}
-
-fn format_duration_secs(seconds: i64) -> String {
-    let seconds = seconds.max(0) as u64;
-    let days = seconds / 86_400;
-    let rem = seconds % 86_400;
-    let hours = rem / 3_600;
-    let minutes = (rem % 3_600) / 60;
-    let secs = rem % 60;
-    if days > 0 {
-        format!("{days}-{hours:02}:{minutes:02}:{secs:02}")
-    } else {
-        format!("{hours:02}:{minutes:02}:{secs:02}")
-    }
 }
 
 fn format_job_req_tres(job: &JobRecord) -> String {
@@ -2588,10 +2233,11 @@ mod tests {
         SUPPORTED_USER_COMMANDS, dispatch_argv0, format_duration_secs, format_timestamp,
         load_sbatch_env_overrides_with, merge_batch_directives, parse_begin_time,
         parse_signal_name, parse_time_filter, parse_warning_signal, resolve_cpu_bind_ids,
-        resolve_export_spec,
     };
     use crate::config::AppConfig;
+    use crate::env::resolve_export_spec;
     use crate::job::{JobRecord, JobState, OpenMode};
+    use crate::time::now_ts;
     use crate::sbatch::BatchDirectives;
 
     #[test]
@@ -2791,9 +2437,9 @@ mod tests {
 
     #[test]
     fn phase4_begin_time_supports_now_offset() {
-        let before = super::now_ts();
+        let before = now_ts();
         let begin = parse_begin_time("now+00:10:00").expect("begin time");
-        let after = super::now_ts();
+        let after = now_ts();
         assert!(begin >= before + 600);
         assert!(begin <= after + 600);
     }

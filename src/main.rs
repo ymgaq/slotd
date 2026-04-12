@@ -1,7 +1,9 @@
 mod cgroup;
 mod cli;
 mod config;
+mod cpu;
 mod daemon;
+mod env;
 mod error;
 mod ipc;
 mod job;
@@ -11,7 +13,9 @@ mod output;
 mod recovery;
 mod runner;
 mod sbatch;
+mod signals;
 mod store;
+mod time;
 
 use std::ffi::OsString;
 
