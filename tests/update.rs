@@ -83,3 +83,87 @@ fn scontrol_update_rejects_job_name_change_after_completion() {
         "stderr:\n{stderr}"
     );
 }
+
+#[test]
+fn scontrol_update_rejects_priority_change_after_completion() {
+    let runtime = TestRuntime::new();
+
+    let job_id = runtime
+        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
+        .parse::<i64>()
+        .expect("parse job id");
+
+    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
+    assert_eq!(final_state, "COMPLETED");
+
+    let output = runtime.run_output(&[
+        "scontrol",
+        "update",
+        "job",
+        &job_id.to_string(),
+        "Priority=999",
+    ]);
+    assert!(!output.status.success(), "unexpected success");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("priority can only be updated while pending"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn scontrol_update_rejects_partition_change_after_completion() {
+    let runtime = TestRuntime::new();
+
+    let job_id = runtime
+        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
+        .parse::<i64>()
+        .expect("parse job id");
+
+    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
+    assert_eq!(final_state, "COMPLETED");
+
+    let output = runtime.run_output(&[
+        "scontrol",
+        "update",
+        "job",
+        &job_id.to_string(),
+        "Partition=cpu",
+    ]);
+    assert!(!output.status.success(), "unexpected success");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("partition can only be updated while pending"),
+        "stderr:\n{stderr}"
+    );
+}
+
+#[test]
+fn scontrol_update_rejects_time_limit_change_after_completion() {
+    let runtime = TestRuntime::new();
+
+    let job_id = runtime
+        .run_checked(&["sbatch", "--parsable", "--wrap", "true"])
+        .parse::<i64>()
+        .expect("parse job id");
+
+    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
+    assert_eq!(final_state, "COMPLETED");
+
+    let output = runtime.run_output(&[
+        "scontrol",
+        "update",
+        "job",
+        &job_id.to_string(),
+        "TimeLimit=00:00:30",
+    ]);
+    assert!(!output.status.success(), "unexpected success");
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("time limit cannot be updated after the job has finished"),
+        "stderr:\n{stderr}"
+    );
+}
