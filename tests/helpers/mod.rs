@@ -131,6 +131,35 @@ impl TestRuntime {
         self.run_checked(&["scontrol", "show", "job", &job_id.to_string()])
     }
 
+    pub fn sacct_lines(&self, fields: &str) -> Vec<String> {
+        self.run_checked(&[
+            "sacct",
+            "--parsable2",
+            "--noheader",
+            "--format",
+            fields,
+        ])
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToString::to_string)
+        .collect()
+    }
+
+    pub fn wait_for_condition<F>(&self, timeout: Duration, mut check: F)
+    where
+        F: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if check() {
+                return;
+            }
+            assert!(Instant::now() < deadline, "timed out waiting for test condition");
+            thread::sleep(Duration::from_millis(100));
+        }
+    }
+
     pub fn root_dir(&self) -> &Path {
         &self.root
     }
