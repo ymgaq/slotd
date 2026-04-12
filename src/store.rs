@@ -1,19 +1,23 @@
+mod row;
+mod schema;
+
 use std::path::PathBuf;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::config::AppConfig;
 use crate::error::{Result, SlotdError};
-use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest, WarningSignal};
+use crate::job::{JobRecord, JobState, NodeInfo, SubmitRequest};
 use crate::sbatch::{
     default_batch_output_pattern, expand_output_pattern, parse_array_spec, resolve_log_path,
 };
 use crate::store_support::{
     default_name, ensure_parent_dir, filter_jobs, join_gpu_ids, order_pending_jobs,
-    parse_export_env_json, parse_gpu_ids, partition_gres_used, partition_state, path_string,
-    script_command,
+    parse_gpu_ids, partition_gres_used, partition_state, path_string, script_command,
 };
 use crate::time::now_ts;
+use row::{JOB_SELECT_COLUMNS, map_job};
+use schema::ensure_compat_schema;
 
 const MIGRATION_SQL: &str = include_str!("../migrations/0001_init.sql");
 
@@ -28,7 +32,7 @@ impl Store {
         let conn = Connection::open(&config.db_path)?;
         conn.execute_batch(MIGRATION_SQL)?;
         let store = Self { conn, config };
-        store.ensure_compat_schema()?;
+        ensure_compat_schema(&store.conn)?;
         Ok(store)
     }
 
@@ -255,14 +259,12 @@ impl Store {
 
     pub fn list_steps(&self, parent_job_id: i64) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
-                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+            &format!(
+                "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE parent_job_id = ?1
-             ORDER BY step_id ASC, id ASC",
+             ORDER BY step_id ASC, id ASC"
+            ),
         )?;
         let rows = stmt.query_map([parent_job_id], map_job)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -281,13 +283,11 @@ impl Store {
         partitions: Option<&[String]>,
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
-                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+            &format!(
+                "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE parent_job_id IS NULL"
+            )
         )?;
         let rows = stmt.query_map([], map_job)?;
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -307,12 +307,7 @@ impl Store {
         end_time: Option<i64>,
     ) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
-                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
-             FROM jobs"
+            &format!("SELECT {JOB_SELECT_COLUMNS} FROM jobs")
         )?;
         let rows = stmt.query_map([], map_job)?;
         let mut jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -324,14 +319,12 @@ impl Store {
 
     pub fn list_running_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
-                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+            &format!(
+                "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE state = 'RUNNING'
-             ORDER BY id ASC",
+             ORDER BY id ASC"
+            ),
         )?;
         let rows = stmt.query_map([], map_job)?;
         rows.collect::<std::result::Result<Vec<_>, _>>()
@@ -341,13 +334,11 @@ impl Store {
     pub fn get_job(&self, job_id: i64) -> Result<Option<JobRecord>> {
         self.conn
             .query_row(
-                "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                        requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
-                        array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                        submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                        assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+                &format!(
+                    "SELECT {JOB_SELECT_COLUMNS}
                  FROM jobs
-                 WHERE id = ?1",
+                 WHERE id = ?1"
+                ),
                 [job_id],
                 map_job,
             )
@@ -357,15 +348,13 @@ impl Store {
 
     pub fn next_pending_jobs(&self) -> Result<Vec<JobRecord>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, parent_job_id, step_id, held, priority, name, user_name, state, partition, command, cwd, requested_cpus, requested_memory_mb,
-                    requested_tasks, requested_gpus, allocation_only, dependency, array_job_id,
-                    array_task_id, array_task_count, array_task_limit, max_rss_kb,
-                    submit_time, start_time, end_time, pid, pgid, exit_code, state_reason, term_signal, time_limit_secs, begin_time, exclusive,
-                    assigned_gpus, script_path, stdout_path, stderr_path, export_env, open_mode, warning_signal, warning_signal_seconds, [constraint], cpu_bind, requeue, requeue_count
+            &format!(
+                "SELECT {JOB_SELECT_COLUMNS}
              FROM jobs
              WHERE state = 'PENDING' AND parent_job_id IS NULL
              ORDER BY id ASC
-            ",
+            "
+            ),
         )?;
         let rows = stmt.query_map([], map_job)?;
         let jobs = rows.collect::<std::result::Result<Vec<_>, _>>()?;
@@ -643,185 +632,6 @@ impl Store {
             ))
         }
     }
-
-    fn ensure_compat_schema(&self) -> Result<()> {
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "parent_job_id",
-            "ALTER TABLE jobs ADD COLUMN parent_job_id INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "step_id",
-            "ALTER TABLE jobs ADD COLUMN step_id INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "held",
-            "ALTER TABLE jobs ADD COLUMN held INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "priority",
-            "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "partition",
-            "ALTER TABLE jobs ADD COLUMN partition TEXT NOT NULL DEFAULT 'cpu'",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "user_name",
-            "ALTER TABLE jobs ADD COLUMN user_name TEXT NOT NULL DEFAULT 'unknown'",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "requested_tasks",
-            "ALTER TABLE jobs ADD COLUMN requested_tasks INTEGER NOT NULL DEFAULT 1",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "requested_gpus",
-            "ALTER TABLE jobs ADD COLUMN requested_gpus INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "allocation_only",
-            "ALTER TABLE jobs ADD COLUMN allocation_only INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "assigned_gpus",
-            "ALTER TABLE jobs ADD COLUMN assigned_gpus TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "state_reason",
-            "ALTER TABLE jobs ADD COLUMN state_reason TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "term_signal",
-            "ALTER TABLE jobs ADD COLUMN term_signal INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "time_limit_secs",
-            "ALTER TABLE jobs ADD COLUMN time_limit_secs INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "dependency",
-            "ALTER TABLE jobs ADD COLUMN dependency TEXT",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "array_job_id",
-            "ALTER TABLE jobs ADD COLUMN array_job_id INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "array_task_id",
-            "ALTER TABLE jobs ADD COLUMN array_task_id INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "array_task_count",
-            "ALTER TABLE jobs ADD COLUMN array_task_count INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "array_task_limit",
-            "ALTER TABLE jobs ADD COLUMN array_task_limit INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "max_rss_kb",
-            "ALTER TABLE jobs ADD COLUMN max_rss_kb INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "begin_time",
-            "ALTER TABLE jobs ADD COLUMN begin_time INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "exclusive",
-            "ALTER TABLE jobs ADD COLUMN exclusive INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "export_env",
-            "ALTER TABLE jobs ADD COLUMN export_env TEXT NOT NULL DEFAULT ''",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "open_mode",
-            "ALTER TABLE jobs ADD COLUMN open_mode TEXT NOT NULL DEFAULT 'truncate'",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "warning_signal",
-            "ALTER TABLE jobs ADD COLUMN warning_signal INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "warning_signal_seconds",
-            "ALTER TABLE jobs ADD COLUMN warning_signal_seconds INTEGER",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "constraint",
-            "ALTER TABLE jobs ADD COLUMN [constraint] TEXT",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "cpu_bind",
-            "ALTER TABLE jobs ADD COLUMN cpu_bind TEXT",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "requeue",
-            "ALTER TABLE jobs ADD COLUMN requeue INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
-            &self.conn,
-            "jobs",
-            "requeue_count",
-            "ALTER TABLE jobs ADD COLUMN requeue_count INTEGER NOT NULL DEFAULT 0",
-        )?;
-        Ok(())
-    }
-
     fn partition_info(&self, partition: &str) -> Result<crate::job::PartitionInfo> {
         let (allocated_cpus, allocated_memory_mb, allocated_gpus) =
             self.running_usage_for_partition(partition)?;
@@ -929,96 +739,6 @@ impl Store {
     }
 }
 
-fn map_job(row: &rusqlite::Row<'_>) -> rusqlite::Result<JobRecord> {
-    let state_text: String = row.get(7)?;
-    let state = state_text.parse().map_err(|message: String| {
-        rusqlite::Error::FromSqlConversionFailure(
-            7,
-            rusqlite::types::Type::Text,
-            Box::new(SlotdError::from(message)),
-        )
-    })?;
-    Ok(JobRecord {
-        id: row.get(0)?,
-        parent_job_id: row.get(1)?,
-        step_id: row.get::<_, Option<i64>>(2)?.map(|value| value as u32),
-        held: row.get::<_, bool>(3)?,
-        priority: row.get(4)?,
-        name: row.get(5)?,
-        user_name: row.get(6)?,
-        state,
-        partition: row.get(8)?,
-        command: row.get(9)?,
-        cwd: row.get(10)?,
-        requested_cpus: row.get(11)?,
-        requested_memory_mb: row.get(12)?,
-        requested_tasks: row.get(13)?,
-        requested_gpus: row.get(14)?,
-        allocation_only: row.get::<_, bool>(15)?,
-        dependency: row.get(16)?,
-        array_job_id: row.get(17)?,
-        array_task_id: row.get(18)?,
-        array_task_count: row.get::<_, Option<i64>>(19)?.map(|value| value as u32),
-        array_task_limit: row.get::<_, Option<i64>>(20)?.map(|value| value as u32),
-        max_rss_kb: row.get::<_, Option<i64>>(21)?.map(|value| value as u64),
-        submit_time: row.get(22)?,
-        start_time: row.get(23)?,
-        end_time: row.get(24)?,
-        pid: row.get(25)?,
-        pgid: row.get(26)?,
-        exit_code: row.get(27)?,
-        state_reason: row
-            .get::<_, String>(28)
-            .ok()
-            .filter(|value| !value.is_empty()),
-        term_signal: row.get(29)?,
-        time_limit_secs: row.get::<_, Option<i64>>(30)?.map(|value| value as u64),
-        begin_time: row.get(31)?,
-        exclusive: row.get::<_, bool>(32)?,
-        assigned_gpu_ids: parse_gpu_ids(&row.get::<_, String>(33)?).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                33,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?,
-        script_path: row.get(34)?,
-        stdout_path: row.get(35)?,
-        stderr_path: row.get(36)?,
-        export_env: parse_export_env_json(&row.get::<_, String>(37)?).map_err(|error| {
-            rusqlite::Error::FromSqlConversionFailure(
-                37,
-                rusqlite::types::Type::Text,
-                Box::new(error),
-            )
-        })?,
-        open_mode: row
-            .get::<_, String>(38)?
-            .parse()
-            .map_err(|message: String| {
-                rusqlite::Error::FromSqlConversionFailure(
-                    38,
-                    rusqlite::types::Type::Text,
-                    Box::new(SlotdError::from(message)),
-                )
-            })?,
-        warning_signal: match (
-            row.get::<_, Option<i32>>(39)?,
-            row.get::<_, Option<i64>>(40)?,
-        ) {
-            (Some(signal), Some(seconds_before_end)) => Some(WarningSignal {
-                signal,
-                seconds_before_end: seconds_before_end as u64,
-            }),
-            _ => None,
-        },
-        constraint: row.get(41)?,
-        cpu_bind: row.get(42)?,
-        requeue: row.get::<_, bool>(43)?,
-        requeue_count: row.get::<_, i64>(44)? as u32,
-    })
-}
-
 fn should_auto_requeue(job: &JobRecord, final_state: JobState) -> bool {
     job.parent_job_id.is_none()
         && job.requeue
@@ -1044,23 +764,6 @@ fn next_step_id_query(conn: &Connection, parent_job_id: i64) -> Result<u32> {
         |row| row.get::<_, i64>(0),
     )?;
     Ok((current + 1).max(0) as u32)
-}
-
-fn ensure_column(conn: &Connection, table: &str, column: &str, alter_sql: &str) -> Result<()> {
-    let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
-    let columns = stmt.query_map([], |row| row.get::<_, String>(1))?;
-    let mut exists = false;
-    for entry in columns {
-        if entry? == column {
-            exists = true;
-            break;
-        }
-    }
-
-    if !exists {
-        conn.execute_batch(alter_sql)?;
-    }
-    Ok(())
 }
 
 #[cfg(test)]
