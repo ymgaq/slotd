@@ -254,7 +254,43 @@ Expected result:
 - the job is scheduled on the `gpu` partition
 - `logs/3.out` contains `nvidia-smi` output
 
-### 3. Run an interactive command with `srun`
+### 3. Submit a batch script with `#SBATCH` directives
+
+Create a batch script:
+
+```bash
+cat > /tmp/slotd-demo.sh <<'EOF'
+#!/usr/bin/env bash
+#SBATCH -J script-demo
+#SBATCH -p cpu
+#SBATCH -c 2
+#SBATCH --mem 1G
+#SBATCH -t 00:05:00
+#SBATCH -o logs/%j.out
+
+echo "hello from script mode"
+echo "job=$SLURM_JOB_ID cpus=$SLURM_CPUS_PER_TASK"
+EOF
+```
+
+Submit it:
+
+```bash
+sbatch /tmp/slotd-demo.sh
+```
+
+Typical output:
+
+```text
+Submitted batch job 4
+```
+
+Expected result:
+
+- the script header is parsed for resource settings such as job name, partition, CPUs, memory, and output path
+- `logs/4.out` contains the echoed lines from the script body
+
+### 4. Run an interactive command with `srun`
 
 ```bash
 srun \
@@ -272,7 +308,7 @@ Typical output:
 0: hello
 ```
 
-### 4. Start an interactive allocation
+### 5. Start an interactive allocation
 
 ```bash
 salloc \
@@ -294,7 +330,7 @@ Expected result:
 - your shell starts inside the allocation
 - follow-up `srun` commands run as steps under that allocation
 
-### 5. Submit an array job
+### 6. Submit an array job
 
 ```bash
 sbatch \
@@ -315,7 +351,7 @@ Expected result:
 - multiple task records are created
 - files such as `logs/5_0.out`, `logs/5_1.out`, and so on are written
 
-### 6. Requeue once on failure
+### 7. Requeue once on failure
 
 ```bash
 sbatch \
@@ -335,7 +371,7 @@ Expected result:
 - the first failed run returns to `PENDING`
 - after the second failure, `sacct` shows the final state as `FAILED`
 
-### 7. Delay job start
+### 8. Delay job start
 
 ```bash
 sbatch \
@@ -355,7 +391,7 @@ Expected result:
 - `squeue` shows the job in `PENDING`
 - `squeue --start` shows an estimated future start time
 
-### 8. Pass custom environment variables
+### 9. Pass custom environment variables
 
 ```bash
 sbatch \

@@ -99,6 +99,33 @@ Submitted batch job 1
 3. `#SBATCH` directive
 4. built-in default
 
+例となる batch script:
+
+```bash
+#!/usr/bin/env bash
+#SBATCH -J script-demo
+#SBATCH -p cpu
+#SBATCH -c 2
+#SBATCH --mem 1G
+#SBATCH -t 00:05:00
+#SBATCH -o logs/%j.out
+
+echo "hello from script mode"
+echo "job=$SLURM_JOB_ID cpus=$SLURM_CPUS_PER_TASK"
+```
+
+投入方法:
+
+```bash
+sbatch ./script-demo.sh
+```
+
+期待される結果:
+
+- `sbatch` が script を読み、先頭の `#SBATCH` directive を適用する
+- 指定した job name、partition、CPU 数、メモリ量、出力 path で job が実行される
+- `logs/<jobid>.out` に script 本文の出力が書かれる
+
 ## Dependencies
 
 サポートする dependency expression:

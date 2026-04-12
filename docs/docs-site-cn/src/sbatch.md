@@ -99,6 +99,33 @@ Submitted batch job 1
 3. `#SBATCH` 指令
 4. 内建默认值
 
+示例 batch script：
+
+```bash
+#!/usr/bin/env bash
+#SBATCH -J script-demo
+#SBATCH -p cpu
+#SBATCH -c 2
+#SBATCH --mem 1G
+#SBATCH -t 00:05:00
+#SBATCH -o logs/%j.out
+
+echo "hello from script mode"
+echo "job=$SLURM_JOB_ID cpus=$SLURM_CPUS_PER_TASK"
+```
+
+提交方式：
+
+```bash
+sbatch ./script-demo.sh
+```
+
+预期结果：
+
+- `sbatch` 会读取脚本并应用开头的 `#SBATCH` 指令
+- 作业会按指定的作业名、分区、CPU 数、内存和输出路径运行
+- `logs/<jobid>.out` 会包含脚本正文输出的内容
+
 ## Dependencies
 
 支持的 dependency 表达式：

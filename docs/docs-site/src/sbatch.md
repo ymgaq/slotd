@@ -99,6 +99,33 @@ Precedence:
 3. `#SBATCH` directives
 4. built-in defaults
 
+Example batch script:
+
+```bash
+#!/usr/bin/env bash
+#SBATCH -J script-demo
+#SBATCH -p cpu
+#SBATCH -c 2
+#SBATCH --mem 1G
+#SBATCH -t 00:05:00
+#SBATCH -o logs/%j.out
+
+echo "hello from script mode"
+echo "job=$SLURM_JOB_ID cpus=$SLURM_CPUS_PER_TASK"
+```
+
+Submit it with:
+
+```bash
+sbatch ./script-demo.sh
+```
+
+Expected result:
+
+- `sbatch` reads the script from disk and applies the leading `#SBATCH` directives
+- the job runs with the requested name, partition, CPU count, memory, and output path
+- `logs/<jobid>.out` contains the echoed lines from the script body
+
 ## Dependencies
 
 Supported dependency expressions:
