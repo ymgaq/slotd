@@ -10,10 +10,18 @@ fn after_dependency_releases_once_prerequisite_has_started() {
     let runtime = TestRuntime::new();
 
     let blocker_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "sleep 3"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "sleep 3",
+        ])
         .parse::<i64>()
         .expect("parse blocker job id");
-    let blocker_state = runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
+    let blocker_state =
+        runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(blocker_state, "RUNNING");
 
     let dependency = format!("after:{blocker_job_id}");
@@ -35,7 +43,8 @@ fn after_dependency_releases_once_prerequisite_has_started() {
         runtime.wait_for_job_state(dependent_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(dependent_state, "COMPLETED");
 
-    let blocker_final = runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
+    let blocker_final =
+        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(blocker_final, "COMPLETED");
 }
 
@@ -44,7 +53,14 @@ fn afterany_dependency_releases_after_failure() {
     let runtime = TestRuntime::new();
 
     let failed_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "exit 1"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "exit 1",
+        ])
         .parse::<i64>()
         .expect("parse failed job id");
     let dependency = format!("afterany:{failed_job_id}");
@@ -74,7 +90,14 @@ fn afternotok_dependency_requires_unsuccessful_prerequisite() {
     let runtime = TestRuntime::new();
 
     let failed_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "exit 1"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "exit 1",
+        ])
         .parse::<i64>()
         .expect("parse failed job id");
     let dependency = format!("afternotok:{failed_job_id}");
@@ -135,13 +158,16 @@ fn singleton_dependency_waits_for_active_job_with_same_name() {
         .parse::<i64>()
         .expect("parse second job id");
 
-    let pending_state = runtime.wait_for_job_state(second_job_id, "PENDING", Duration::from_secs(2));
+    let pending_state =
+        runtime.wait_for_job_state(second_job_id, "PENDING", Duration::from_secs(2));
     assert_eq!(pending_state, "PENDING");
     runtime.assert_job_state_stable(second_job_id, "PENDING", Duration::from_millis(500));
 
-    let first_final = runtime.wait_for_job_state(first_job_id, "COMPLETED", Duration::from_secs(10));
+    let first_final =
+        runtime.wait_for_job_state(first_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(first_final, "COMPLETED");
-    let second_final = runtime.wait_for_job_state(second_job_id, "COMPLETED", Duration::from_secs(10));
+    let second_final =
+        runtime.wait_for_job_state(second_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(second_final, "COMPLETED");
 }
 
@@ -165,12 +191,14 @@ fn array_spec_supports_steps_and_mixed_segments() {
 
     runtime.wait_for_condition(Duration::from_secs(10), || {
         let tasks = array_task_ids(&runtime, array_job_id);
-        tasks.len() == 4 && tasks == HashSet::from([
-            format!("{array_job_id}_1"),
-            format!("{array_job_id}_3"),
-            format!("{array_job_id}_5"),
-            format!("{array_job_id}_8"),
-        ])
+        tasks.len() == 4
+            && tasks
+                == HashSet::from([
+                    format!("{array_job_id}_1"),
+                    format!("{array_job_id}_3"),
+                    format!("{array_job_id}_5"),
+                    format!("{array_job_id}_8"),
+                ])
     });
 }
 

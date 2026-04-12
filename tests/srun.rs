@@ -24,17 +24,11 @@ fn srun_immediate_fails_when_running_job_holds_all_cpus() {
         .parse::<i64>()
         .expect("parse blocker job id");
 
-    let running_state = runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
+    let running_state =
+        runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(running_state, "RUNNING");
 
-    let output = runtime.run_output(&[
-        "srun",
-        "--immediate",
-        "--cpus-per-task",
-        "1",
-        "--",
-        "true",
-    ]);
+    let output = runtime.run_output(&["srun", "--immediate", "--cpus-per-task", "1", "--", "true"]);
     assert!(
         !output.status.success(),
         "srun unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",

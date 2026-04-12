@@ -68,8 +68,14 @@ fn scontrol_show_job_reports_core_fields_for_pending_job() {
     runtime.assert_job_state_stable(job_id, "PENDING", Duration::from_millis(500));
 
     let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains(&format!("JobId={job_id}")), "details:\n{details}");
-    assert!(details.contains("JobName=inspect-me"), "details:\n{details}");
+    assert!(
+        details.contains(&format!("JobId={job_id}")),
+        "details:\n{details}"
+    );
+    assert!(
+        details.contains("JobName=inspect-me"),
+        "details:\n{details}"
+    );
     assert!(details.contains("Partition=cpu"), "details:\n{details}");
     assert!(details.contains("State=PENDING"), "details:\n{details}");
     assert!(

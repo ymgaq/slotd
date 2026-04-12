@@ -121,6 +121,7 @@ fn sbatch_chdir_sets_workdir_and_relative_output_root() {
         "details:\n{details}"
     );
 
-    let stdout = fs::read_to_string(workdir.join(format!("slurm-{job_id}.out"))).expect("read chdir stdout");
+    let stdout =
+        fs::read_to_string(workdir.join(format!("slurm-{job_id}.out"))).expect("read chdir stdout");
     assert_eq!(stdout.trim(), workdir.display().to_string());
 }

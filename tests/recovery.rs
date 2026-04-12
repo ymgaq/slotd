@@ -18,11 +18,8 @@ fn daemon_restart_adopts_running_job_and_records_terminal_state() {
 
     runtime.restart_daemon();
 
-    let final_state = runtime.wait_for_job_state_in(
-        job_id,
-        &["COMPLETED", "FAILED"],
-        Duration::from_secs(10),
-    );
+    let final_state =
+        runtime.wait_for_job_state_in(job_id, &["COMPLETED", "FAILED"], Duration::from_secs(10));
     let details = runtime.scontrol_show_job(job_id);
     assert!(
         details.contains(&format!("JobId={job_id}")),

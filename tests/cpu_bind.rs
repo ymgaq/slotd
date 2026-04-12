@@ -64,15 +64,7 @@ fn srun_cpu_bind_map_cpu_and_cores_apply_affinity() {
 fn srun_cpu_bind_rejects_invalid_value() {
     let runtime = TestRuntime::new();
 
-    let output = runtime.run_output(&[
-        "srun",
-        "-p",
-        "cpu",
-        "--cpu-bind",
-        "bogus",
-        "--",
-        "true",
-    ]);
+    let output = runtime.run_output(&["srun", "-p", "cpu", "--cpu-bind", "bogus", "--", "true"]);
     assert!(
         !output.status.success(),
         "srun unexpectedly succeeded\nstdout:\n{}\nstderr:\n{}",

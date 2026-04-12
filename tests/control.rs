@@ -33,7 +33,10 @@ fn scontrol_hold_and_release_controls_pending_job() {
 
     let details = runtime.scontrol_show_job(held_job_id);
     assert!(details.contains("State=PENDING"), "details:\n{details}");
-    assert!(details.contains("Reason=JobHeldUser"), "details:\n{details}");
+    assert!(
+        details.contains("Reason=JobHeldUser"),
+        "details:\n{details}"
+    );
 
     let blocker_state =
         runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));

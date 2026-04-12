@@ -10,7 +10,14 @@ fn array_tasks_wait_on_dependency_and_then_complete() {
     let runtime = TestRuntime::new();
 
     let blocker_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "sleep 2"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "sleep 2",
+        ])
         .parse::<i64>()
         .expect("parse blocker job id");
     let dependency = format!("afterok:{blocker_job_id}");
@@ -35,7 +42,8 @@ fn array_tasks_wait_on_dependency_and_then_complete() {
         tasks.len() == 2 && tasks.values().all(|state| state == "PENDING")
     });
 
-    let blocker_final = runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
+    let blocker_final =
+        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(blocker_final, "COMPLETED");
 
     runtime.wait_for_condition(Duration::from_secs(10), || {
@@ -49,7 +57,14 @@ fn hold_update_release_keeps_changes_and_unblocks_execution() {
     let runtime = TestRuntime::new();
 
     let blocker_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--partition", "cpu", "--wrap", "sleep 2"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--partition",
+            "cpu",
+            "--wrap",
+            "sleep 2",
+        ])
         .parse::<i64>()
         .expect("parse blocker job id");
     let dependency = format!("afterok:{blocker_job_id}");
@@ -81,11 +96,21 @@ fn hold_update_release_keeps_changes_and_unblocks_execution() {
     ]);
 
     let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains("Reason=JobHeldUser"), "details:\n{details}");
-    assert!(details.contains("JobName=held-updated"), "details:\n{details}");
-    assert!(details.contains("TimeLimit=00:00:05"), "details:\n{details}");
+    assert!(
+        details.contains("Reason=JobHeldUser"),
+        "details:\n{details}"
+    );
+    assert!(
+        details.contains("JobName=held-updated"),
+        "details:\n{details}"
+    );
+    assert!(
+        details.contains("TimeLimit=00:00:05"),
+        "details:\n{details}"
+    );
 
-    let blocker_final = runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
+    let blocker_final =
+        runtime.wait_for_job_state(blocker_job_id, "COMPLETED", Duration::from_secs(10));
     assert_eq!(blocker_final, "COMPLETED");
     runtime.assert_job_state_stable(job_id, "PENDING", Duration::from_millis(500));
 
@@ -94,7 +119,10 @@ fn hold_update_release_keeps_changes_and_unblocks_execution() {
     assert_eq!(final_state, "COMPLETED");
 
     let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains("JobName=held-updated"), "details:\n{details}");
+    assert!(
+        details.contains("JobName=held-updated"),
+        "details:\n{details}"
+    );
 }
 
 fn array_task_states(runtime: &TestRuntime, array_job_id: i64) -> HashMap<String, String> {

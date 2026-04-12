@@ -27,8 +27,14 @@ fn job_exceeding_time_limit_finishes_as_timeout() {
     assert_eq!(final_state, "TIMEOUT");
 
     let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains(&format!("JobId={job_id}")), "details:\n{details}");
+    assert!(
+        details.contains(&format!("JobId={job_id}")),
+        "details:\n{details}"
+    );
     assert!(details.contains("State=TIMEOUT"), "details:\n{details}");
     assert!(details.contains("Reason=TimeLimit"), "details:\n{details}");
-    assert!(details.contains("TimeLimit=00:00:01"), "details:\n{details}");
+    assert!(
+        details.contains("TimeLimit=00:00:01"),
+        "details:\n{details}"
+    );
 }

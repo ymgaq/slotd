@@ -10,7 +10,14 @@ fn array_job_expands_all_tasks_and_completes() {
     let runtime = TestRuntime::new();
 
     let array_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--array", "0-2", "--wrap", "sleep 1"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--array",
+            "0-2",
+            "--wrap",
+            "sleep 1",
+        ])
         .parse::<i64>()
         .expect("parse array job id");
 
@@ -26,9 +33,18 @@ fn array_job_expands_all_tasks_and_completes() {
     let tasks = array_task_states(&runtime, array_job_id);
     let job_ids = tasks.keys().cloned().collect::<HashSet<_>>();
     assert_eq!(job_ids.len(), 3, "tasks: {tasks:?}");
-    assert!(job_ids.contains(&format!("{array_job_id}_0")), "tasks: {tasks:?}");
-    assert!(job_ids.contains(&format!("{array_job_id}_1")), "tasks: {tasks:?}");
-    assert!(job_ids.contains(&format!("{array_job_id}_2")), "tasks: {tasks:?}");
+    assert!(
+        job_ids.contains(&format!("{array_job_id}_0")),
+        "tasks: {tasks:?}"
+    );
+    assert!(
+        job_ids.contains(&format!("{array_job_id}_1")),
+        "tasks: {tasks:?}"
+    );
+    assert!(
+        job_ids.contains(&format!("{array_job_id}_2")),
+        "tasks: {tasks:?}"
+    );
 }
 
 #[test]
@@ -36,7 +52,14 @@ fn array_job_respects_concurrency_limit() {
     let runtime = TestRuntime::new();
 
     let array_job_id = runtime
-        .run_checked(&["sbatch", "--parsable", "--array", "0-3%1", "--wrap", "sleep 1"])
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--array",
+            "0-3%1",
+            "--wrap",
+            "sleep 1",
+        ])
         .parse::<i64>()
         .expect("parse array job id");
 
@@ -53,7 +76,10 @@ fn array_job_respects_concurrency_limit() {
     });
 }
 
-fn array_task_states(runtime: &TestRuntime, array_job_id: i64) -> std::collections::HashMap<String, String> {
+fn array_task_states(
+    runtime: &TestRuntime,
+    array_job_id: i64,
+) -> std::collections::HashMap<String, String> {
     array_task_rows(runtime, array_job_id)
 }
 

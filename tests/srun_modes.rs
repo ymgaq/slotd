@@ -39,7 +39,8 @@ fn salloc_immediate_fails_when_resources_are_unavailable() {
         .parse::<i64>()
         .expect("parse blocker job id");
 
-    let running_state = runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
+    let running_state =
+        runtime.wait_for_job_state(blocker_job_id, "RUNNING", Duration::from_secs(5));
     assert_eq!(running_state, "RUNNING");
 
     let output = runtime.run_output(&["salloc", "--immediate", "-c", "1", "/bin/true"]);

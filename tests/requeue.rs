@@ -9,10 +9,7 @@ use helpers::TestRuntime;
 fn requeue_retries_failed_job_once_and_only_once() {
     let runtime = TestRuntime::new();
     let attempt_log = runtime.root_dir().join("attempts.log");
-    let wrap = format!(
-        "echo attempt >> {}; exit 1",
-        attempt_log.display()
-    );
+    let wrap = format!("echo attempt >> {}; exit 1", attempt_log.display());
 
     let job_id = runtime
         .run_checked(&["sbatch", "--parsable", "--requeue", "--wrap", &wrap])

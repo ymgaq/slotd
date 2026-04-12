@@ -36,13 +36,18 @@ fn sbatch_marks_job_out_of_memory_when_cgroup_reports_oom() {
         .parse::<i64>()
         .expect("parse job id");
 
-    let final_state =
-        runtime.wait_for_job_state(job_id, "OUT_OF_MEMORY", Duration::from_secs(10));
+    let final_state = runtime.wait_for_job_state(job_id, "OUT_OF_MEMORY", Duration::from_secs(10));
     assert_eq!(final_state, "OUT_OF_MEMORY");
 
     let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains("State=OUT_OF_MEMORY"), "details:\n{details}");
-    assert!(details.contains("Reason=OutOfMemory"), "details:\n{details}");
+    assert!(
+        details.contains("State=OUT_OF_MEMORY"),
+        "details:\n{details}"
+    );
+    assert!(
+        details.contains("Reason=OutOfMemory"),
+        "details:\n{details}"
+    );
 
     let _ = fs::remove_dir_all(&cgroup_base);
 }

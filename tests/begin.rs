@@ -24,7 +24,10 @@ fn begin_time_keeps_job_pending_until_requested_time() {
     assert_eq!(pending_state, "PENDING");
 
     let details = runtime.scontrol_show_job(job_id);
-    assert!(details.contains(&format!("JobId={job_id}")), "details:\n{details}");
+    assert!(
+        details.contains(&format!("JobId={job_id}")),
+        "details:\n{details}"
+    );
     assert!(details.contains("State=PENDING"), "details:\n{details}");
     assert!(details.contains("Reason=BeginTime"), "details:\n{details}");
 
