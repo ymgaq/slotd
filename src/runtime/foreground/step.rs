@@ -3,11 +3,10 @@ use crate::app::error::{Result, SlotdError};
 use crate::model::job::JobRecord;
 use crate::proto::ipc::{Request, Response, send_request};
 use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup};
+use crate::runtime::foreground_launch::{launch_foreground_command, setup_local_cgroup};
 use crate::runtime::terminal::{exit_signal, terminal_state_with_reasons};
 
-use super::{
-    ForegroundExecutionOptions, launch_foreground_command, setup_local_cgroup, start_step_record,
-};
+use super::{ForegroundExecutionOptions, start_step_record};
 
 pub(crate) fn run_foreground_step(
     config: &AppConfig,

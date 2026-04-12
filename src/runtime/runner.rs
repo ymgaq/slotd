@@ -1,42 +1,35 @@
 use std::collections::HashMap;
-use std::fs::File;
-use std::fs::OpenOptions;
-use std::os::unix::process::CommandExt;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
-use std::thread;
-use std::time::Duration;
+use std::path::PathBuf;
+use std::process::Child;
 
 use nix::sys::signal::{Signal, killpg};
-use nix::unistd::{Pid, setsid};
+use nix::unistd::Pid;
 
 use crate::app::config::AppConfig;
 use crate::app::error::Result;
-use crate::model::job::{JobRecord, JobState, OpenMode};
-use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
-use crate::runtime::cpu::{apply_cpu_affinity, resolve_cpu_bind_ids};
-use crate::runtime::launch::{LaunchCommand, build_multitask_launcher};
+use crate::model::job::{JobRecord, JobState};
+use crate::runtime::cgroup::{cgroup_oomed, cleanup_cgroup};
 use crate::runtime::notify::notify_job;
+use crate::runtime::runner_launch::{job_status_path, launch_running_job};
+use crate::runtime::runner_lifecycle::{
+    terminate_running_job, timed_out_jobs, warning_signal_to_send,
+};
 use crate::runtime::runner_support::{
     job_cgroup_path, process_group_alive, read_process_rss_kb, recovered_terminal_state,
-    wait_for_group_exit,
 };
-use crate::runtime::slurm_env::apply_slurm_env;
 use crate::runtime::terminal::{exit_signal, terminal_state_with_reasons};
 use crate::store::Store;
-use crate::store::support::join_gpu_ids;
-use crate::util::time::now_ts;
 
-pub struct RunningJob {
+pub(crate) struct RunningJob {
     pub pgid: i32,
     pub pid: i32,
     pub cgroup_path: Option<PathBuf>,
     pub status_path: Option<PathBuf>,
     pub warning_signal_sent: bool,
-    handle: JobHandle,
+    pub(crate) handle: JobHandle,
 }
 
-enum JobHandle {
+pub(crate) enum JobHandle {
     Child(Child),
     Adopted,
 }
@@ -55,101 +48,7 @@ impl Runner {
     }
 
     pub fn launch(&mut self, store: &Store, job: &JobRecord) -> Result<()> {
-        let stdout = open_output_file(&job.stdout_path, job.open_mode)?;
-        let stderr = if job.stderr_path == job.stdout_path {
-            stdout.try_clone()?
-        } else {
-            open_output_file(&job.stderr_path, job.open_mode)?
-        };
-        let assigned_gpu_ids = if store.config().is_gpu_partition(&job.partition) {
-            store.allocate_gpu_ids(job.requested_gpus)?
-        } else {
-            Vec::new()
-        };
-
-        let status_path = job_status_path(job).ok_or_else(|| {
-            crate::app::error::SlotdError::from("missing script path for daemon job")
-        })?;
-        let wrapper_path = job_wrapper_path(job);
-        std::fs::write(
-            &wrapper_path,
-            format!(
-                "{}\ncode=$?\nprintf '%s\\n' \"$code\" > {}\nexit \"$code\"\n",
-                build_multitask_launcher(
-                    LaunchCommand::Script(Path::new(&job.script_path)),
-                    job.requested_tasks,
-                    false,
-                ),
-                shell_quote_path(&status_path.to_string_lossy())
-            ),
-        )?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = std::fs::metadata(&wrapper_path)?.permissions();
-            perms.set_mode(0o755);
-            std::fs::set_permissions(&wrapper_path, perms)?;
-        }
-
-        let mut command = Command::new("/bin/bash");
-        command.arg(&wrapper_path);
-        command.current_dir(&job.cwd);
-        command.stdin(Stdio::null());
-        command.stdout(Stdio::from(stdout));
-        command.stderr(Stdio::from(stderr));
-        command.envs(job.export_env.iter().cloned());
-        apply_slurm_env(&mut command, store.config(), job);
-        if !assigned_gpu_ids.is_empty() {
-            command.env("CUDA_VISIBLE_DEVICES", join_gpu_ids(&assigned_gpu_ids));
-        }
-        let cpu_bind = resolve_cpu_bind_ids(
-            job.cpu_bind.as_deref(),
-            store.config().total_cpus,
-            job.requested_cpus
-                .saturating_mul(job.requested_tasks)
-                .max(1),
-        )?;
-        // Create a dedicated process group so scancel can terminate the whole tree.
-        unsafe {
-            command.pre_exec(|| {
-                setsid().map_err(std::io::Error::other)?;
-                Ok(())
-            });
-        }
-        if let Some(cpu_ids) = cpu_bind {
-            unsafe {
-                command.pre_exec(move || {
-                    apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
-                    Ok(())
-                });
-            }
-        }
-
-        let child = command.spawn()?;
-        let pid = child.id() as i32;
-        let pgid = pid;
-        let cgroup_path = setup_job_cgroup(
-            store.config().cgroup_base.as_deref(),
-            job.id,
-            job.requested_memory_mb,
-            job.requested_cpus,
-            job.requested_tasks,
-            store.config().total_cpus,
-            pid,
-        )?;
-        store.mark_running(job.id, pid, pgid, &assigned_gpu_ids)?;
-
-        self.jobs.insert(
-            job.id,
-            RunningJob {
-                pgid,
-                pid,
-                cgroup_path,
-                status_path: Some(status_path),
-                warning_signal_sent: false,
-                handle: JobHandle::Child(child),
-            },
-        );
+        self.jobs.insert(job.id, launch_running_job(store, job)?);
         Ok(())
     }
 
@@ -244,21 +143,7 @@ impl Runner {
     }
 
     pub fn enforce_timeouts(&mut self, config: &AppConfig, store: &Store) -> Result<()> {
-        let now = now_ts();
-        let timed_out = self
-            .jobs
-            .keys()
-            .copied()
-            .filter_map(|job_id| {
-                let job = store.get_job(job_id).ok().flatten()?;
-                let start = job.start_time?;
-                let limit = job.time_limit_secs?;
-                (job.state == JobState::Running && now >= start.saturating_add(limit as i64))
-                    .then_some(job_id)
-            })
-            .collect::<Vec<_>>();
-
-        for job_id in timed_out {
+        for job_id in timed_out_jobs(store, &self.jobs) {
             self.terminate_job(config, store, job_id, JobState::Timeout, "TimeLimit")?;
         }
 
@@ -268,22 +153,8 @@ impl Runner {
             .filter_map(|(&job_id, running)| (!running.warning_signal_sent).then_some(job_id))
             .collect::<Vec<_>>();
         for job_id in jobs_to_warn {
-            let Some(job) = store.get_job(job_id)? else {
-                continue;
-            };
-            let Some(start) = job.start_time else {
-                continue;
-            };
-            let Some(limit) = job.time_limit_secs else {
-                continue;
-            };
-            let Some(warning_signal) = &job.warning_signal else {
-                continue;
-            };
-            let deadline = start.saturating_add(limit as i64);
-            let warn_at = deadline.saturating_sub(warning_signal.seconds_before_end as i64);
-            if now >= warn_at && now < deadline {
-                self.signal_job(job_id, warning_signal.signal)?;
+            if let Some(signal) = warning_signal_to_send(store, &self.jobs, job_id)? {
+                self.signal_job(job_id, signal)?;
                 if let Some(running) = self.jobs.get_mut(&job_id) {
                     running.warning_signal_sent = true;
                 }
@@ -340,88 +211,6 @@ impl Runner {
         let Some(running) = self.jobs.remove(&job_id) else {
             return Ok(());
         };
-
-        store.mark_state(job_id, JobState::Completing, Some(final_reason))?;
-
-        let pgid = Pid::from_raw(running.pgid);
-        let _ = killpg(pgid, Signal::SIGTERM);
-        thread::sleep(Duration::from_secs(config.cancel_grace_secs));
-
-        let (exit_code, term_signal) = match running.handle {
-            JobHandle::Child(mut child) => {
-                if let Some(status) = child.try_wait()? {
-                    (status.code(), exit_signal(&status))
-                } else {
-                    let _ = killpg(pgid, Signal::SIGKILL);
-                    let status = child.wait()?;
-                    (
-                        status.code(),
-                        exit_signal(&status).or(Some(Signal::SIGKILL as i32)),
-                    )
-                }
-            }
-            JobHandle::Adopted => {
-                if process_group_alive(running.pgid)? {
-                    let _ = killpg(pgid, Signal::SIGKILL);
-                    wait_for_group_exit(running.pgid, config.cancel_grace_secs)?;
-                }
-                (None, Some(Signal::SIGKILL as i32))
-            }
-        };
-
-        let (final_state, final_reason) = if cgroup_oomed(running.cgroup_path.as_deref()) {
-            (JobState::OutOfMemory, "OutOfMemory")
-        } else {
-            (final_state, final_reason)
-        };
-        let job = store.mark_finished(
-            job_id,
-            final_state,
-            exit_code,
-            term_signal,
-            Some(final_reason),
-        )?;
-        if job.state.is_terminal() {
-            notify_job(store.config(), &job)?;
-        }
-        cleanup_cgroup(running.cgroup_path.as_deref());
-        Ok(())
+        terminate_running_job(config, store, job_id, running, final_state, final_reason)
     }
-}
-
-fn open_output_file(path: &str, open_mode: OpenMode) -> Result<File> {
-    let mut options = OpenOptions::new();
-    options.create(true).write(true);
-    match open_mode {
-        OpenMode::Append => {
-            options.append(true);
-        }
-        OpenMode::Truncate => {
-            options.truncate(true);
-        }
-    }
-    Ok(options.open(path)?)
-}
-
-fn job_status_path(job: &JobRecord) -> Option<PathBuf> {
-    if job.script_path.is_empty() {
-        return None;
-    }
-    Some(
-        Path::new(&job.script_path)
-            .parent()
-            .unwrap_or_else(|| Path::new("."))
-            .join("exit_status"),
-    )
-}
-
-fn job_wrapper_path(job: &JobRecord) -> PathBuf {
-    Path::new(&job.script_path)
-        .parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("runner.sh")
-}
-
-fn shell_quote_path(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }

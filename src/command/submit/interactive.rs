@@ -11,7 +11,8 @@ use crate::runtime::foreground::{
 use crate::runtime::foreground_io::ForegroundIoOptions;
 use crate::runtime::launch::shell_join;
 
-use super::{current_user_name, wait};
+use super::common::current_user_name;
+use super::wait;
 
 pub(crate) fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
     if args.pty {

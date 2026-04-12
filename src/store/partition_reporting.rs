@@ -1,21 +1,13 @@
 use rusqlite::params;
 
 use crate::app::error::Result;
-use crate::model::job::{JobState, NodeInfo, PartitionInfo};
+use crate::model::job::{JobState, PartitionInfo};
 use crate::store::support::{parse_gpu_ids, partition_gres_used, partition_state};
 
 use super::Store;
 
 impl Store {
-    pub fn node_info(&self) -> Result<NodeInfo> {
-        let mut partitions = Vec::new();
-        for partition in self.config.active_partitions() {
-            partitions.push(self.partition_info(&partition)?);
-        }
-        Ok(NodeInfo { partitions })
-    }
-
-    fn partition_info(&self, partition: &str) -> Result<PartitionInfo> {
+    pub(super) fn partition_info(&self, partition: &str) -> Result<PartitionInfo> {
         let (allocated_cpus, allocated_memory_mb, allocated_gpus) =
             self.running_usage_for_partition(partition)?;
         let running_jobs = self.count_jobs_by_partition_and_state(partition, JobState::Running)?;
