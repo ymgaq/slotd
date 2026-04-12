@@ -46,3 +46,41 @@ fn srun_foreground_honors_output_and_error_paths() {
     assert!(stdout.contains("foreground-out"), "stdout file:\n{stdout}");
     assert!(stderr.contains("foreground-err"), "stderr file:\n{stderr}");
 }
+
+#[test]
+fn sbatch_expands_output_pattern_tokens_in_runtime_paths() {
+    let runtime = TestRuntime::new();
+    let logs_dir = runtime.root_dir().join("logs");
+    fs::create_dir_all(&logs_dir).expect("create logs dir");
+
+    let hostname = runtime
+        .run_checked(&["sinfo", "--noheader", "-o", "%N"])
+        .lines()
+        .next()
+        .expect("hostname line")
+        .trim()
+        .to_string();
+
+    let job_id = runtime
+        .run_checked(&[
+            "sbatch",
+            "--parsable",
+            "--job-name",
+            "pattern-check",
+            "--output",
+            "logs/%x-%u-%N-%%-%j.out",
+            "--wrap",
+            "echo pattern-output",
+        ])
+        .parse::<i64>()
+        .expect("parse job id");
+
+    let final_state = runtime.wait_for_job_state(job_id, "COMPLETED", Duration::from_secs(10));
+    assert_eq!(final_state, "COMPLETED");
+
+    let stdout_path = logs_dir.join(format!(
+        "pattern-check-slotd-test-{hostname}-%-{job_id}.out"
+    ));
+    let stdout = fs::read_to_string(&stdout_path).expect("read expanded stdout");
+    assert!(stdout.contains("pattern-output"), "stdout:\n{stdout}");
+}

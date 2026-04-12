@@ -11,10 +11,15 @@ pub struct TestRuntime {
     daemon: Option<Child>,
     bin_path: PathBuf,
     daemon_stderr_path: PathBuf,
+    env_vars: Vec<(String, String)>,
 }
 
 impl TestRuntime {
     pub fn new() -> Self {
+        Self::with_env(&[])
+    }
+
+    pub fn with_env(env_vars: &[(&str, &str)]) -> Self {
         let tempdir = unique_tempdir();
         let root = tempdir.join("slotd-root");
         std::fs::create_dir_all(&root).expect("create slotd root");
@@ -26,6 +31,10 @@ impl TestRuntime {
             daemon: None,
             bin_path,
             daemon_stderr_path,
+            env_vars: env_vars
+                .iter()
+                .map(|(key, value)| ((*key).to_string(), (*value).to_string()))
+                .collect(),
         };
         runtime.spawn_daemon();
         runtime.wait_for_daemon_ready(Duration::from_secs(10));
@@ -36,6 +45,7 @@ impl TestRuntime {
         let mut command = Command::new(&self.bin_path);
         command.env("SLOTD_ROOT", &self.root);
         command.env("USER", "slotd-test");
+        command.envs(self.env_vars.iter().map(|(key, value)| (key, value)));
         command.current_dir(self.root_dir());
         command
     }
@@ -121,18 +131,12 @@ impl TestRuntime {
     }
 
     pub fn sacct_lines(&self, fields: &str) -> Vec<String> {
-        self.run_checked(&[
-            "sacct",
-            "--parsable2",
-            "--noheader",
-            "--format",
-            fields,
-        ])
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .map(ToString::to_string)
-        .collect()
+        self.run_checked(&["sacct", "--parsable2", "--noheader", "--format", fields])
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(ToString::to_string)
+            .collect()
     }
 
     pub fn wait_for_condition<F>(&self, timeout: Duration, mut check: F)
@@ -144,7 +148,10 @@ impl TestRuntime {
             if check() {
                 return;
             }
-            assert!(Instant::now() < deadline, "timed out waiting for test condition");
+            assert!(
+                Instant::now() < deadline,
+                "timed out waiting for test condition"
+            );
             thread::sleep(Duration::from_millis(100));
         }
     }
@@ -237,6 +244,7 @@ impl TestRuntime {
             .arg("daemon")
             .env("SLOTD_ROOT", &self.root)
             .env("USER", "slotd-test")
+            .envs(self.env_vars.iter().map(|(key, value)| (key, value)))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::from(daemon_stderr))
