@@ -27,6 +27,9 @@ Current behavior:
 - memory is stored in MB
 - GPUs are integer slots
 - admission is reservation-based, not usage-based
+- if `SLOTD_CGROUP_BASE` is unset, CPU and memory remain reservation-only
+- if `SLOTD_CGROUP_BASE` is set to a writable cgroup v2 subtree, `slotd` writes `memory.max` and `cpu.max`
+- if cgroup setup fails after explicit configuration, launch fails instead of silently skipping enforcement
 
 ## Partitions
 

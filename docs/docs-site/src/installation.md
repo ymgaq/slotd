@@ -59,6 +59,9 @@ Example:
   --notify-cmd 'notify-send "slotd" "$SLOTD_JOB_ID $SLOTD_JOB_STATE"'
 ```
 
+If you set `--cgroup-base`, use a writable cgroup v2 subtree. Leaving it unset
+keeps CPU and memory as reservation-only scheduling values.
+
 ## Uninstall
 
 Remove the installation:

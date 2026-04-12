@@ -27,6 +27,9 @@ controller と worker の分離はなく、リモートノード起動プロト�
 - メモリは MB 単位で保存
 - GPU は整数スロット
 - admission は実使用量ではなく予約量ベース
+- `SLOTD_CGROUP_BASE` が未設定なら、CPU とメモリは予約量だけを扱う
+- `SLOTD_CGROUP_BASE` を writable な cgroup v2 subtree に設定すると、`slotd` は `memory.max` と `cpu.max` を書き込む
+- 明示設定後に cgroup 設定に失敗した場合は、enforcement を黙って省略せず launch を失敗させる
 
 ## パーティション
 

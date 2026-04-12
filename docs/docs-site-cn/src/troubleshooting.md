@@ -87,6 +87,17 @@ squeue
 scontrol show job <job_id>
 ```
 
+## cgroup 设置失败
+
+如果设置了 `SLOTD_CGROUP_BASE`，但它并不是可写的 cgroup v2 subtree，作业启动会
+直接以明确的 cgroup error 失败。
+
+检查：
+
+- 该路径在 daemon 环境中确实存在
+- 它是 cgroup v2 subtree，而不是普通目录或文件
+- daemon 用户可以在其中创建每个作业的子目录并写入 control file
+
 ## 作业被取消但最终状态是 `OUT_OF_MEMORY`
 
 如果在终止过程中 cgroup 内存事件表明发生了 OOM，最终状态可能优先记录为 `OUT_OF_MEMORY`。

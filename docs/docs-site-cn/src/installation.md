@@ -55,9 +55,12 @@ cd slotd
 
 ```bash
 ./scripts/install.sh \
-  --features cpu,gpu \
+ --features cpu,gpu \
   --notify-cmd 'notify-send "slotd" "$SLOTD_JOB_ID $SLOTD_JOB_STATE"'
 ```
+
+如果使用 `--cgroup-base`，请传入一个可写的 cgroup v2 subtree。若保持未设置，
+CPU 与内存仍然只按预留值参与调度。
 
 ## 卸载
 

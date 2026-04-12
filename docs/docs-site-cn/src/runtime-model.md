@@ -27,6 +27,9 @@
 - 内存以 MB 保存
 - GPU 以整数 slot 表示
 - 准入基于预留量，而不是实际使用量
+- 如果 `SLOTD_CGROUP_BASE` 未设置，CPU 和内存仍然只是预留值
+- 如果 `SLOTD_CGROUP_BASE` 指向可写的 cgroup v2 subtree，`slotd` 会写入 `memory.max` 与 `cpu.max`
+- 显式启用后如果 cgroup 设置失败，作业启动会失败，而不是静默跳过 enforcement
 
 ## 分区
 

@@ -87,6 +87,17 @@ squeue
 scontrol show job <job_id>
 ```
 
+## cgroup 設定に失敗する
+
+`SLOTD_CGROUP_BASE` を設定しているのに writable な cgroup v2 subtree を指して
+いない場合、job launch は明示的な cgroup error で失敗します。
+
+確認項目:
+
+- daemon 環境でその path が存在するか
+- 通常の directory や file ではなく cgroup v2 subtree か
+- daemon ユーザーが job ごとの subdirectory 作成と control file 書き込みをできるか
+
 ## Cancel したのに `OUT_OF_MEMORY` で終わった
 
 終了処理中に cgroup の memory event が OOM を示した場合、最終状態は `OUT_OF_MEMORY` が優先されることがあります。

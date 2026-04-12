@@ -50,6 +50,7 @@ The implementation is intentionally Rust-first:
 - CPU, memory, and GPU reservation-based scheduling
 - host-detected CPU and memory capacity with GPU autodetection
 - true single-node multi-task execution for `--ntasks`
+- optional cgroup v2 CPU/memory enforcement when `SLOTD_CGROUP_BASE` is set
 - batch jobs, interactive runs, allocations, and steps
 - dependencies and job arrays
 - `--constraint`, `--begin`, `--exclusive`, `--requeue`
@@ -122,6 +123,10 @@ Example:
   --features cpu,gpu \
   --notify-cmd 'notify-send "slotd" "$SLOTD_JOB_ID $SLOTD_JOB_STATE"'
 ```
+
+If `--cgroup-base` is left unset, CPU and memory remain reservation-only. If it
+is set, it must point at a writable cgroup v2 subtree or job launch fails
+clearly.
 
 ### Uninstall
 

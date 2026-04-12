@@ -87,6 +87,17 @@ squeue
 scontrol show job <job_id>
 ```
 
+## cgroup Setup Fails
+
+If `SLOTD_CGROUP_BASE` is set but does not point at a writable cgroup v2
+subtree, job launch fails with an explicit cgroup error.
+
+Check:
+
+- the path exists in the daemon environment
+- the path is a cgroup v2 subtree, not a regular directory or file
+- the daemon user can create per-job subdirectories and write control files there
+
 ## A Job Was Cancelled but Ended as `OUT_OF_MEMORY`
 
 This can happen if cgroup memory events indicate an OOM during termination. In that case the final state prefers `OUT_OF_MEMORY`.

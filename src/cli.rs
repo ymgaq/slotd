@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use clap::{Args, Parser, Subcommand};
 
+use crate::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::config::AppConfig;
 use crate::daemon;
 use crate::error::{Result, SlotdError};
@@ -1176,10 +1177,7 @@ fn run_foreground_allocation_with_mode(
     let (state, reason) = allocation_terminal_state(
         exit_code,
         term_signal,
-        local_cgroup
-            .as_deref()
-            .map(local_cgroup_oomed)
-            .unwrap_or(false),
+        cgroup_oomed(local_cgroup.as_deref()),
     );
     match send_request(
         config,
@@ -1222,7 +1220,7 @@ fn run_foreground_allocation_with_mode(
             }
         }
     }
-    cleanup_local_cgroup(local_cgroup.as_deref());
+    cleanup_cgroup(local_cgroup.as_deref());
 
     match state {
         JobState::Completed => Ok(()),
@@ -1695,10 +1693,7 @@ fn run_foreground_step(
     let (state, reason) = allocation_terminal_state(
         exit_code,
         term_signal,
-        local_cgroup
-            .as_deref()
-            .map(local_cgroup_oomed)
-            .unwrap_or(false),
+        cgroup_oomed(local_cgroup.as_deref()),
     );
     match send_request(
         config,
@@ -1719,7 +1714,7 @@ fn run_foreground_step(
             )));
         }
     }
-    cleanup_local_cgroup(local_cgroup.as_deref());
+    cleanup_cgroup(local_cgroup.as_deref());
     match status.code() {
         Some(0) => Ok(()),
         Some(code) => Err(SlotdError::Exit(code)),
@@ -2461,50 +2456,15 @@ fn setup_local_cgroup(
     job: &JobRecord,
     pid: i32,
 ) -> Result<Option<PathBuf>> {
-    let Some(base) = &config.cgroup_base else {
-        return Ok(None);
-    };
-    let path = base.join(format!("slotd-{job_id}"));
-    std::fs::create_dir_all(&path)?;
-    std::fs::write(
-        path.join("memory.max"),
-        job.requested_memory_mb
-            .saturating_mul(1024 * 1024)
-            .to_string(),
-    )?;
-    let requested_cpus = job
-        .requested_cpus
-        .saturating_mul(job.requested_tasks)
-        .max(1);
-    let quota = 100_000u64
-        .saturating_mul(requested_cpus as u64)
-        .checked_div(config.total_cpus.max(1) as u64)
-        .unwrap_or(100_000)
-        .max(1);
-    std::fs::write(path.join("cpu.max"), format!("{quota} 100000"))?;
-    std::fs::write(path.join("cgroup.procs"), pid.to_string())?;
-    Ok(Some(path))
-}
-
-fn local_cgroup_oomed(path: &Path) -> bool {
-    let Ok(contents) = std::fs::read_to_string(path.join("memory.events")) else {
-        return false;
-    };
-    contents.lines().any(|line| {
-        let mut parts = line.split_whitespace();
-        matches!(parts.next(), Some("oom_kill") | Some("oom"))
-            && parts
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0)
-                > 0
-    })
-}
-
-fn cleanup_local_cgroup(path: Option<&Path>) {
-    if let Some(path) = path {
-        let _ = std::fs::remove_dir(path);
-    }
+    setup_job_cgroup(
+        config.cgroup_base.as_deref(),
+        job_id,
+        job.requested_memory_mb,
+        job.requested_cpus,
+        job.requested_tasks,
+        config.total_cpus,
+        pid,
+    )
 }
 
 #[cfg(test)]

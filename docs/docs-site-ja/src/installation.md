@@ -55,9 +55,12 @@ cd slotd
 
 ```bash
 ./scripts/install.sh \
-  --features cpu,gpu \
+ --features cpu,gpu \
   --notify-cmd 'notify-send "slotd" "$SLOTD_JOB_ID $SLOTD_JOB_STATE"'
 ```
+
+`--cgroup-base` を使う場合は、writable な cgroup v2 subtree を指定してください。
+未設定のままなら CPU とメモリは予約量ベースのままです。
 
 ## アンインストール
 

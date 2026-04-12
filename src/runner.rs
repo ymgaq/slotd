@@ -12,6 +12,7 @@ use nix::sched::{CpuSet, sched_setaffinity};
 use nix::sys::signal::{Signal, kill, killpg};
 use nix::unistd::{Pid, setsid};
 
+use crate::cgroup::{cgroup_oomed, cleanup_cgroup, setup_job_cgroup};
 use crate::config::AppConfig;
 use crate::error::Result;
 use crate::job::{JobRecord, JobState, OpenMode};
@@ -129,7 +130,15 @@ impl Runner {
         let child = command.spawn()?;
         let pid = child.id() as i32;
         let pgid = pid;
-        let cgroup_path = setup_job_cgroup(store.config(), job, pid)?;
+        let cgroup_path = setup_job_cgroup(
+            store.config().cgroup_base.as_deref(),
+            job.id,
+            job.requested_memory_mb,
+            job.requested_cpus,
+            job.requested_tasks,
+            store.config().total_cpus,
+            pid,
+        )?;
         store.mark_running(job.id, pid, pgid, &assigned_gpu_ids)?;
 
         self.jobs.insert(
@@ -561,59 +570,11 @@ fn shell_quote_path(value: &str) -> String {
     format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
-fn setup_job_cgroup(config: &AppConfig, job: &JobRecord, pid: i32) -> Result<Option<PathBuf>> {
-    let Some(path) = job_cgroup_path(config, job.id) else {
-        return Ok(None);
-    };
-
-    fs::create_dir_all(&path)?;
-    let memory_bytes = job.requested_memory_mb.saturating_mul(1024 * 1024);
-    fs::write(path.join("memory.max"), memory_bytes.to_string())?;
-
-    let total_requested_cpus = job
-        .requested_cpus
-        .saturating_mul(job.requested_tasks)
-        .max(1);
-    let quota = 100_000u64
-        .saturating_mul(total_requested_cpus as u64)
-        .checked_div(config.total_cpus.max(1) as u64)
-        .unwrap_or(100_000)
-        .max(1);
-    fs::write(path.join("cpu.max"), format!("{quota} 100000"))?;
-    fs::write(path.join("cgroup.procs"), pid.to_string())?;
-    Ok(Some(path))
-}
-
 fn job_cgroup_path(config: &AppConfig, job_id: i64) -> Option<PathBuf> {
     config
         .cgroup_base
         .as_ref()
         .map(|base| base.join(format!("slotd-{job_id}")))
-}
-
-fn cleanup_cgroup(path: Option<&Path>) {
-    let Some(path) = path else {
-        return;
-    };
-    let _ = fs::remove_dir(path);
-}
-
-fn cgroup_oomed(path: Option<&Path>) -> bool {
-    let Some(path) = path else {
-        return false;
-    };
-    let Ok(contents) = fs::read_to_string(path.join("memory.events")) else {
-        return false;
-    };
-    contents.lines().any(|line| {
-        let mut parts = line.split_whitespace();
-        matches!(parts.next(), Some("oom_kill") | Some("oom"))
-            && parts
-                .next()
-                .and_then(|value| value.parse::<u64>().ok())
-                .unwrap_or(0)
-                > 0
-    })
 }
 
 fn read_process_rss_kb(pid: i32) -> Option<u64> {
