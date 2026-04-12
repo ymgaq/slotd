@@ -1066,19 +1066,23 @@ fn run_foreground_allocation_with_mode(
     } else {
         None
     };
-    let mut child = Command::new(&command[0]);
-    child.args(&command[1..]);
-    child.current_dir(&job.cwd);
-    child.stdin(Stdio::inherit());
+    let mut command_builder = Command::new(&command[0]);
+    command_builder.args(&command[1..]);
+    command_builder.current_dir(&job.cwd);
+    command_builder.stdin(Stdio::inherit());
     let io_state = configure_foreground_stdio(
-        &mut child,
+        &mut command_builder,
         &job.cwd,
         options.io.stdout_path,
         options.io.stderr_path,
         options.io.label_output,
         options.io.unbuffered,
     )?;
-    apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
+    apply_slurm_env(
+        &mut command_builder,
+        config,
+        step_record.as_ref().unwrap_or(job),
+    );
     let cpu_ids = resolve_cpu_bind_ids(
         options.cpu_bind.or(step_record
             .as_ref()
@@ -1089,20 +1093,21 @@ fn run_foreground_allocation_with_mode(
             .max(1),
     )?;
     unsafe {
-        child.pre_exec(|| {
+        command_builder.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
     }
     if let Some(cpu_ids) = cpu_ids {
         unsafe {
-            child.pre_exec(move || {
+            command_builder.pre_exec(move || {
                 apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
                 Ok(())
             });
         }
     }
-    let mut child = child.spawn()?;
+    let mut child = command_builder.spawn()?;
+    drop(command_builder);
     let pid = child.id() as i32;
     let pgid = pid;
     let local_cgroup = match setup_local_cgroup(
@@ -1404,7 +1409,6 @@ fn open_foreground_stdio(path: Option<&Path>, cwd: &str, fallback: &str) -> Resu
 
 fn same_path(stdout_path: Option<&Path>, stderr_path: Option<&Path>) -> bool {
     match (stdout_path, stderr_path) {
-        (None, None) => true,
         (Some(left), Some(right)) => left == right,
         _ => false,
     }
@@ -1609,19 +1613,19 @@ fn run_foreground_step(
     options: ForegroundExecutionOptions<'_>,
 ) -> Result<()> {
     let step = start_step_record(config, job, command)?;
-    let mut child = Command::new(&command[0]);
-    child.args(&command[1..]);
-    child.current_dir(&job.cwd);
-    child.stdin(Stdio::inherit());
+    let mut command_builder = Command::new(&command[0]);
+    command_builder.args(&command[1..]);
+    command_builder.current_dir(&job.cwd);
+    command_builder.stdin(Stdio::inherit());
     let io_state = configure_foreground_stdio(
-        &mut child,
+        &mut command_builder,
         &job.cwd,
         options.io.stdout_path,
         options.io.stderr_path,
         options.io.label_output,
         options.io.unbuffered,
     )?;
-    apply_slurm_env(&mut child, config, &step);
+    apply_slurm_env(&mut command_builder, config, &step);
     let cpu_ids = resolve_cpu_bind_ids(
         options.cpu_bind.or(step.cpu_bind.as_deref()),
         config.total_cpus,
@@ -1630,20 +1634,21 @@ fn run_foreground_step(
             .max(1),
     )?;
     unsafe {
-        child.pre_exec(|| {
+        command_builder.pre_exec(|| {
             nix::unistd::setsid().map_err(std::io::Error::other)?;
             Ok(())
         });
     }
     if let Some(cpu_ids) = cpu_ids {
         unsafe {
-            child.pre_exec(move || {
+            command_builder.pre_exec(move || {
                 apply_cpu_affinity(&cpu_ids).map_err(std::io::Error::other)?;
                 Ok(())
             });
         }
     }
-    let mut child = child.spawn()?;
+    let mut child = command_builder.spawn()?;
+    drop(command_builder);
     let pid = child.id() as i32;
     let pgid = pid;
     let local_cgroup = match setup_local_cgroup(config, step.id, &step, pid) {
