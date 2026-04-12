@@ -165,19 +165,17 @@ impl Runner {
     pub fn reconcile_adopted(&mut self, store: &Store) -> Result<()> {
         let mut finished = Vec::new();
         for (&job_id, running) in &self.jobs {
-            if let JobHandle::Adopted = running.handle {
-                if !process_group_alive(running.pgid)? {
-                    let (state, exit_code, reason) = recovered_terminal_state(
-                        &running.status_path,
-                        running.cgroup_path.as_deref(),
-                    );
-                    let job = store.mark_finished(job_id, state, exit_code, None, Some(reason))?;
-                    if job.state.is_terminal() {
-                        notify_job(store.config(), &job)?;
-                    }
-                    cleanup_cgroup(running.cgroup_path.as_deref());
-                    finished.push(job_id);
+            if let JobHandle::Adopted = running.handle
+                && !process_group_alive(running.pgid)?
+            {
+                let (state, exit_code, reason) =
+                    recovered_terminal_state(&running.status_path, running.cgroup_path.as_deref());
+                let job = store.mark_finished(job_id, state, exit_code, None, Some(reason))?;
+                if job.state.is_terminal() {
+                    notify_job(store.config(), &job)?;
                 }
+                cleanup_cgroup(running.cgroup_path.as_deref());
+                finished.push(job_id);
             }
         }
 
@@ -191,10 +189,10 @@ impl Runner {
     pub fn poll(&mut self, store: &Store) -> Result<()> {
         let mut finished = Vec::new();
         for (&job_id, running) in &mut self.jobs {
-            if running.pid > 0 {
-                if let Some(max_rss_kb) = read_process_rss_kb(running.pid) {
-                    store.update_max_rss(job_id, max_rss_kb)?;
-                }
+            if running.pid > 0
+                && let Some(max_rss_kb) = read_process_rss_kb(running.pid)
+            {
+                store.update_max_rss(job_id, max_rss_kb)?;
             }
             match &mut running.handle {
                 JobHandle::Child(child) => {

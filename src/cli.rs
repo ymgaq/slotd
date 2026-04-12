@@ -112,6 +112,21 @@ struct SbatchEnvOverrides {
     requeue: bool,
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+struct ForegroundIoOptions<'a> {
+    stdout_path: Option<&'a Path>,
+    stderr_path: Option<&'a Path>,
+    label_output: bool,
+    unbuffered: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ForegroundExecutionOptions<'a> {
+    record_step: bool,
+    cpu_bind: Option<&'a str>,
+    io: ForegroundIoOptions<'a>,
+}
+
 impl ResourceArgs {
     fn resolve(
         &self,
@@ -491,11 +506,16 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
             &config,
             &job,
             &args.command,
-            args.output.as_deref(),
-            args.error.as_deref(),
-            args.cpu_bind.as_deref(),
-            args.label,
-            args.unbuffered,
+            ForegroundExecutionOptions {
+                record_step: true,
+                cpu_bind: args.cpu_bind.as_deref(),
+                io: ForegroundIoOptions {
+                    stdout_path: args.output.as_deref(),
+                    stderr_path: args.error.as_deref(),
+                    label_output: args.label,
+                    unbuffered: args.unbuffered,
+                },
+            },
         );
     }
 
@@ -511,7 +531,7 @@ fn run_srun(config: AppConfig, args: SrunArgs) -> Result<()> {
         return run_interactive_srun(
             &config,
             InteractiveRunSpec {
-                name: resolved.job_name.or_else(|| Some(command_name)),
+                name: resolved.job_name.or(Some(command_name)),
                 partition: resolved.partition,
                 cwd: resolved.cwd,
                 requested_cpus: resolved.requested_cpus,
@@ -812,7 +832,10 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
             job_id: args.job_id,
         },
     )? {
-        Response::Job { job: Some(job) } => {
+        Response::Job { job } => {
+            let Some(job) = *job else {
+                return Err(SlotdError::from(format!("job {} not found", args.job_id)));
+            };
             let steps = match send_request(
                 &config,
                 &Request::ListSteps {
@@ -829,9 +852,6 @@ fn run_scontrol(config: AppConfig, args: ScontrolArgs) -> Result<()> {
             };
             print_scontrol_job(&config, &job, &steps);
             Ok(())
-        }
-        Response::Job { job: None } => {
-            Err(SlotdError::from(format!("job {} not found", args.job_id)))
         }
         Response::Error { message } => Err(SlotdError::from(message)),
         other => Err(SlotdError::from(format!(
@@ -926,11 +946,11 @@ fn run_sinfo(config: AppConfig, args: SinfoArgs) -> Result<()> {
 fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
     loop {
         match send_request(config, &Request::GetJob { job_id })? {
-            Response::Job { job: Some(job) } if job.state.is_terminal() => return Ok(job),
-            Response::Job { job: Some(_) } => thread::sleep(Duration::from_millis(200)),
-            Response::Job { job: None } => {
-                return Err(SlotdError::from(format!("job {job_id} disappeared")));
-            }
+            Response::Job { job } => match *job {
+                Some(job) if job.state.is_terminal() => return Ok(job),
+                Some(_) => thread::sleep(Duration::from_millis(200)),
+                None => return Err(SlotdError::from(format!("job {job_id} disappeared"))),
+            },
             Response::Error { message } => return Err(SlotdError::from(message)),
             other => {
                 return Err(SlotdError::from(format!(
@@ -943,8 +963,9 @@ fn wait_for_job_completion(config: &AppConfig, job_id: i64) -> Result<JobRecord>
 
 fn load_job(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
     match send_request(config, &Request::GetJob { job_id })? {
-        Response::Job { job: Some(job) } => Ok(job),
-        Response::Job { job: None } => Err(SlotdError::from(format!("job {job_id} not found"))),
+        Response::Job { job } => {
+            (*job).ok_or_else(|| SlotdError::from(format!("job {job_id} not found")))
+        }
         Response::Error { message } => Err(SlotdError::from(message)),
         other => Err(SlotdError::from(format!(
             "unexpected response while loading job {job_id}: {other:?}"
@@ -1003,17 +1024,19 @@ fn wait_for_submission_completion(config: &AppConfig, job_id: i64) -> Result<()>
 fn wait_for_job_running(config: &AppConfig, job_id: i64) -> Result<JobRecord> {
     loop {
         match send_request(config, &Request::GetJob { job_id })? {
-            Response::Job { job: Some(job) } if job.state == JobState::Running => return Ok(job),
-            Response::Job { job: Some(job) } if job.state.is_terminal() => {
-                return Err(SlotdError::from(format!(
-                    "allocation {job_id} ended before it became runnable: {}",
-                    job.state.as_str()
-                )));
-            }
-            Response::Job { job: Some(_) } => thread::sleep(Duration::from_millis(200)),
-            Response::Job { job: None } => {
-                return Err(SlotdError::from(format!("allocation {job_id} disappeared")));
-            }
+            Response::Job { job } => match *job {
+                Some(job) if job.state == JobState::Running => return Ok(job),
+                Some(job) if job.state.is_terminal() => {
+                    return Err(SlotdError::from(format!(
+                        "allocation {job_id} ended before it became runnable: {}",
+                        job.state.as_str()
+                    )));
+                }
+                Some(_) => thread::sleep(Duration::from_millis(200)),
+                None => {
+                    return Err(SlotdError::from(format!("allocation {job_id} disappeared")));
+                }
+            },
             Response::Error { message } => return Err(SlotdError::from(message)),
             other => {
                 return Err(SlotdError::from(format!(
@@ -1029,21 +1052,16 @@ fn run_foreground_allocation(
     job: &JobRecord,
     command: &[String],
 ) -> Result<()> {
-    run_foreground_allocation_with_mode(config, job, command, false, None, None, None, false, false)
+    run_foreground_allocation_with_mode(config, job, command, ForegroundExecutionOptions::default())
 }
 
 fn run_foreground_allocation_with_mode(
     config: &AppConfig,
     job: &JobRecord,
     command: &[String],
-    record_step: bool,
-    stdout_path: Option<&Path>,
-    stderr_path: Option<&Path>,
-    cpu_bind: Option<&str>,
-    label_output: bool,
-    unbuffered: bool,
+    options: ForegroundExecutionOptions<'_>,
 ) -> Result<()> {
-    let step_record = if record_step {
+    let step_record = if options.record_step {
         Some(start_step_record(config, job, command)?)
     } else {
         None
@@ -1055,14 +1073,14 @@ fn run_foreground_allocation_with_mode(
     let io_state = configure_foreground_stdio(
         &mut child,
         &job.cwd,
-        stdout_path,
-        stderr_path,
-        label_output,
-        unbuffered,
+        options.io.stdout_path,
+        options.io.stderr_path,
+        options.io.label_output,
+        options.io.unbuffered,
     )?;
     apply_slurm_env(&mut child, config, step_record.as_ref().unwrap_or(job));
     let cpu_ids = resolve_cpu_bind_ids(
-        cpu_bind.or(step_record
+        options.cpu_bind.or(step_record
             .as_ref()
             .and_then(|step| step.cpu_bind.as_deref())),
         config.total_cpus,
@@ -1271,12 +1289,16 @@ fn run_interactive_srun(config: &AppConfig, spec: InteractiveRunSpec) -> Result<
         config,
         &job,
         &spec.command,
-        true,
-        spec.stdout_path.as_deref(),
-        spec.stderr_path.as_deref(),
-        spec.cpu_bind.as_deref(),
-        spec.label_output,
-        spec.unbuffered,
+        ForegroundExecutionOptions {
+            record_step: true,
+            cpu_bind: spec.cpu_bind.as_deref(),
+            io: ForegroundIoOptions {
+                stdout_path: spec.stdout_path.as_deref(),
+                stderr_path: spec.stderr_path.as_deref(),
+                label_output: spec.label_output,
+                unbuffered: spec.unbuffered,
+            },
+        },
     )
 }
 
@@ -1311,9 +1333,8 @@ fn start_step_record(
             job_id: step_job_id,
         },
     )? {
-        Response::Job { job: Some(job) } => Ok(job),
-        Response::Job { job: None } => {
-            Err(SlotdError::from(format!("step {step_job_id} disappeared")))
+        Response::Job { job } => {
+            (*job).ok_or_else(|| SlotdError::from(format!("step {step_job_id} disappeared")))
         }
         Response::Error { message } => Err(SlotdError::from(message)),
         other => Err(SlotdError::from(format!(
@@ -1564,12 +1585,9 @@ fn current_allocation_job(config: &AppConfig) -> Result<Option<JobRecord>> {
     };
 
     match send_request(config, &Request::GetJob { job_id })? {
-        Response::Job { job: Some(job) }
-            if job.state == JobState::Running && job.allocation_only =>
-        {
-            Ok(Some(job))
+        Response::Job { job } => {
+            Ok((*job).filter(|job| job.state == JobState::Running && job.allocation_only))
         }
-        Response::Job { .. } => Ok(None),
         Response::Error { message } => Err(SlotdError::from(message)),
         other => Err(SlotdError::from(format!(
             "unexpected response while loading current allocation: {other:?}"
@@ -1581,11 +1599,7 @@ fn run_foreground_step(
     config: &AppConfig,
     job: &JobRecord,
     command: &[String],
-    stdout_path: Option<&Path>,
-    stderr_path: Option<&Path>,
-    cpu_bind: Option<&str>,
-    label_output: bool,
-    unbuffered: bool,
+    options: ForegroundExecutionOptions<'_>,
 ) -> Result<()> {
     let step = start_step_record(config, job, command)?;
     let mut child = Command::new(&command[0]);
@@ -1595,14 +1609,14 @@ fn run_foreground_step(
     let io_state = configure_foreground_stdio(
         &mut child,
         &job.cwd,
-        stdout_path,
-        stderr_path,
-        label_output,
-        unbuffered,
+        options.io.stdout_path,
+        options.io.stderr_path,
+        options.io.label_output,
+        options.io.unbuffered,
     )?;
     apply_slurm_env(&mut child, config, &step);
     let cpu_ids = resolve_cpu_bind_ids(
-        cpu_bind.or(step.cpu_bind.as_deref()),
+        options.cpu_bind.or(step.cpu_bind.as_deref()),
         config.total_cpus,
         job.requested_cpus
             .saturating_mul(job.requested_tasks)
@@ -1883,28 +1897,28 @@ fn load_sbatch_env_overrides_with<F>(get: F) -> SbatchEnvOverrides
 where
     F: Fn(&str) -> Option<String>,
 {
-    let mut directives = BatchDirectives::default();
-    directives.job_name = get("SBATCH_JOB_NAME");
-    directives.partition = get("SBATCH_PARTITION");
-    directives.cpus_per_task = get("SBATCH_CPUS_PER_TASK").and_then(|value| value.parse().ok());
-    directives.ntasks = get("SBATCH_NTASKS").and_then(|value| value.parse().ok());
-    directives.mem_mb = get("SBATCH_MEM").and_then(|value| parse_mem_mb(&value).ok());
-    directives.time_limit_secs =
-        get("SBATCH_TIME").and_then(|value| parse_time_limit_secs(&value).ok());
-    directives.gpus = get("SBATCH_GPUS").and_then(|value| value.parse().ok());
-    directives.constraint = get("SBATCH_CONSTRAINT");
-    directives.begin = get("SBATCH_BEGIN");
-    directives.exclusive = get("SBATCH_EXCLUSIVE")
-        .map(|value| parse_env_flag(&value))
-        .unwrap_or(false);
-    directives.requeue = get("SBATCH_REQUEUE")
-        .map(|value| parse_env_flag(&value))
-        .unwrap_or(false);
-    directives.output_path = get("SBATCH_OUTPUT");
-    directives.error_path = get("SBATCH_ERROR");
-    directives.chdir = get("SBATCH_CHDIR");
-    directives.dependency = get("SBATCH_DEPENDENCY");
-    directives.array_spec = get("SBATCH_ARRAY_INX");
+    let directives = BatchDirectives {
+        job_name: get("SBATCH_JOB_NAME"),
+        partition: get("SBATCH_PARTITION"),
+        cpus_per_task: get("SBATCH_CPUS_PER_TASK").and_then(|value| value.parse().ok()),
+        ntasks: get("SBATCH_NTASKS").and_then(|value| value.parse().ok()),
+        mem_mb: get("SBATCH_MEM").and_then(|value| parse_mem_mb(&value).ok()),
+        time_limit_secs: get("SBATCH_TIME").and_then(|value| parse_time_limit_secs(&value).ok()),
+        gpus: get("SBATCH_GPUS").and_then(|value| value.parse().ok()),
+        constraint: get("SBATCH_CONSTRAINT"),
+        begin: get("SBATCH_BEGIN"),
+        exclusive: get("SBATCH_EXCLUSIVE")
+            .map(|value| parse_env_flag(&value))
+            .unwrap_or(false),
+        requeue: get("SBATCH_REQUEUE")
+            .map(|value| parse_env_flag(&value))
+            .unwrap_or(false),
+        output_path: get("SBATCH_OUTPUT"),
+        error_path: get("SBATCH_ERROR"),
+        chdir: get("SBATCH_CHDIR"),
+        dependency: get("SBATCH_DEPENDENCY"),
+        array_spec: get("SBATCH_ARRAY_INX"),
+    };
     let exclusive = directives.exclusive;
     let requeue = directives.requeue;
 

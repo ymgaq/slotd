@@ -164,7 +164,7 @@ fn dispatch_request(
             jobs: store.list_steps(parent_job_id)?,
         },
         Request::GetJob { job_id } => Response::Job {
-            job: store.get_job(job_id)?,
+            job: Box::new(store.get_job(job_id)?),
         },
         Request::HoldJob { job_id } => {
             store.hold_job(job_id)?;
@@ -278,10 +278,8 @@ fn submit_run(
     }
 
     let job_id = store.create_job(request)?;
-    if can_start_now {
-        if let Some(job) = store.get_job(job_id)? {
-            runner.launch(store, &job)?;
-        }
+    if can_start_now && let Some(job) = store.get_job(job_id)? {
+        runner.launch(store, &job)?;
     }
 
     Ok(Response::Submitted { job_id })
@@ -348,10 +346,11 @@ fn pending_block_reason<'a>(store: &'a Store, job: &'a JobRecord) -> Result<Opti
         return Ok(Some("Dependency"));
     }
 
-    if let (Some(array_job_id), Some(limit)) = (job.array_job_id, job.array_task_limit) {
-        if limit > 0 && store.running_array_tasks(array_job_id)? >= limit {
-            return Ok(Some("JobArrayTaskLimit"));
-        }
+    if let (Some(array_job_id), Some(limit)) = (job.array_job_id, job.array_task_limit)
+        && limit > 0
+        && store.running_array_tasks(array_job_id)? >= limit
+    {
+        return Ok(Some("JobArrayTaskLimit"));
     }
 
     Ok(None)

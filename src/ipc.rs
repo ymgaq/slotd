@@ -84,7 +84,7 @@ pub enum Request {
 pub enum Response {
     Submitted { job_id: i64 },
     Jobs { jobs: Vec<JobRecord> },
-    Job { job: Option<JobRecord> },
+    Job { job: Box<Option<JobRecord>> },
     Cancelled { job_id: i64 },
     NodeInfo { info: NodeInfo },
     Error { message: String },
