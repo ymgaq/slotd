@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 pub struct TestRuntime {
     tempdir: PathBuf,
     root: PathBuf,
-    daemon: Child,
+    daemon: Option<Child>,
     bin_path: PathBuf,
     daemon_stderr_path: PathBuf,
 }
@@ -20,25 +20,14 @@ impl TestRuntime {
         std::fs::create_dir_all(&root).expect("create slotd root");
         let bin_path = PathBuf::from(env!("CARGO_BIN_EXE_slotd"));
         let daemon_stderr_path = tempdir.join("daemon.stderr.log");
-        let daemon_stderr = std::fs::File::create(&daemon_stderr_path).expect("create daemon log");
-
-        let daemon = Command::new(&bin_path)
-            .arg("daemon")
-            .env("SLOTD_ROOT", &root)
-            .env("USER", "slotd-test")
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(daemon_stderr))
-            .spawn()
-            .expect("spawn daemon");
-
         let mut runtime = Self {
             tempdir,
             root,
-            daemon,
+            daemon: None,
             bin_path,
             daemon_stderr_path,
         };
+        runtime.spawn_daemon();
         runtime.wait_for_daemon_ready(Duration::from_secs(10));
         runtime
     }
@@ -164,6 +153,21 @@ impl TestRuntime {
         &self.root
     }
 
+    pub fn stop_daemon(&mut self) {
+        if let Some(mut daemon) = self.daemon.take() {
+            if let Ok(None) = daemon.try_wait() {
+                let _ = daemon.kill();
+            }
+            let _ = daemon.wait();
+        }
+    }
+
+    pub fn restart_daemon(&mut self) {
+        self.stop_daemon();
+        self.spawn_daemon();
+        self.wait_for_daemon_ready(Duration::from_secs(10));
+    }
+
     fn run(&self, args: &[&str]) -> Output {
         self.command()
             .args(args)
@@ -199,11 +203,13 @@ impl TestRuntime {
                 }
             }
 
-            match self.daemon.try_wait() {
-                Ok(Some(status)) => panic!(
-                    "daemon exited before becoming ready: {status}\nstderr:\n{}",
-                    self.daemon_stderr()
-                ),
+            match self.daemon.as_mut().expect("daemon process").try_wait() {
+                Ok(Some(status)) => {
+                    panic!(
+                        "daemon exited before becoming ready: {status}\nstderr:\n{}",
+                        self.daemon_stderr()
+                    )
+                }
                 Ok(None) => {}
                 Err(error) => panic!("failed to check daemon status: {error}"),
             }
@@ -220,14 +226,29 @@ impl TestRuntime {
     fn daemon_stderr(&self) -> String {
         std::fs::read_to_string(&self.daemon_stderr_path).unwrap_or_default()
     }
+
+    fn spawn_daemon(&mut self) {
+        let daemon_stderr = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.daemon_stderr_path)
+            .expect("open daemon log");
+        let daemon = Command::new(&self.bin_path)
+            .arg("daemon")
+            .env("SLOTD_ROOT", &self.root)
+            .env("USER", "slotd-test")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(daemon_stderr))
+            .spawn()
+            .expect("spawn daemon");
+        self.daemon = Some(daemon);
+    }
 }
 
 impl Drop for TestRuntime {
     fn drop(&mut self) {
-        if let Ok(None) = self.daemon.try_wait() {
-            let _ = self.daemon.kill();
-        }
-        let _ = self.daemon.wait();
+        self.stop_daemon();
         let _ = std::fs::remove_dir_all(&self.tempdir);
     }
 }
