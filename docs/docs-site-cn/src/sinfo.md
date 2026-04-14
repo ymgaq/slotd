@@ -21,13 +21,15 @@
 ```text
 PARTITION | HOSTNAMES | STATE | FEATURES | GRES_USED
 cpu*      | localhost | idle  | cpu      | N/A
-gpu       | localhost | idle  | cpu,gpu  | gpu:0
+gpu       | localhost | idle  | cpu,generic_gpu | gpu:0
 ```
 
 说明：
 
 - 每个已配置分区显示一行
 - 默认分区会标记为 `*`
+- CPU partition 的 `FEATURES` 只显示 `cpu`
+- GPU partition 的 `FEATURES` 显示 `cpu` 和检测到的 GPU 型号 feature，不显示通用 `gpu`
 
 ## 节点视图
 

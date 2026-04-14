@@ -115,19 +115,32 @@ impl AppConfig {
         self.gpu_partitions.iter().any(|name| name == partition)
     }
 
-    pub fn available_features(&self) -> &[String] {
-        &self.features
+    pub fn available_features_for_partition(&self, partition: &str) -> Vec<&str> {
+        self.features
+            .iter()
+            .filter(|feature| {
+                if feature.eq_ignore_ascii_case("cpu") {
+                    return true;
+                }
+                if self.is_gpu_partition(partition) {
+                    !feature.eq_ignore_ascii_case("gpu")
+                } else {
+                    false
+                }
+            })
+            .map(String::as_str)
+            .collect()
     }
 
-    pub fn format_features(&self) -> String {
-        self.features.join(",")
+    pub fn format_features(&self, partition: &str) -> String {
+        self.available_features_for_partition(partition).join(",")
     }
 
     pub fn matches_constraint(&self, constraint: &str, partition: &str) -> bool {
         if constraint.trim().is_empty() {
             return true;
         }
-        let features = self.available_features();
+        let features = self.available_features_for_partition(partition);
         parse_constraint_terms(constraint).iter().all(|term| {
             term.eq_ignore_ascii_case(partition)
                 || features

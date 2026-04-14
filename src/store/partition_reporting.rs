@@ -26,7 +26,7 @@ impl Store {
             hostname: self.config.hostname.clone(),
             state,
             gres_used,
-            features: self.config.format_features(),
+            features: self.config.format_features(partition),
             total_cpus: self.config.total_cpus,
             total_memory_mb: self.config.total_memory_mb,
             total_gpus: if self.config.is_gpu_partition(partition) {

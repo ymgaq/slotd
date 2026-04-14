@@ -1,5 +1,6 @@
 use crate::app::config::AppConfig;
 use crate::model::job::PartitionInfo;
+use std::collections::BTreeSet;
 
 use super::table::{TableColumn, print_table};
 
@@ -59,10 +60,13 @@ pub fn build_sinfo_node_rows(
     let hostname = partitions[0].hostname.clone();
     let features = partitions
         .iter()
-        .map(|partition| partition.features.as_str())
-        .find(|value| !value.is_empty())
-        .unwrap_or("")
-        .to_string();
+        .flat_map(|partition| partition.features.split(','))
+        .map(str::trim)
+        .filter(|feature| !feature.is_empty())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>()
+        .join(",");
     let total_cpus = partitions
         .iter()
         .map(|partition| partition.total_cpus)

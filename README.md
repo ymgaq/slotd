@@ -159,6 +159,8 @@ sacct
 Typical output:
 
 - `sinfo` shows one row per configured partition, for example `cpu` and `gpu`
+- CPU partitions show only `cpu` in `FEATURES`
+- GPU partitions show `cpu` plus detected GPU model features such as `rtx3090`
 - `squeue` is usually empty immediately after a fresh install
 - `sacct` is usually empty until you submit jobs
 

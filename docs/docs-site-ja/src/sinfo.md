@@ -21,13 +21,15 @@
 ```text
 PARTITION | HOSTNAMES | STATE | FEATURES | GRES_USED
 cpu*      | localhost | idle  | cpu      | N/A
-gpu       | localhost | idle  | cpu,gpu  | gpu:0
+gpu       | localhost | idle  | cpu,generic_gpu | gpu:0
 ```
 
 補足:
 
 - 設定済み partition ごとに 1 行表示される
 - default partition には `*` が付く
+- CPU partition の `FEATURES` は `cpu` のみを表示する
+- GPU partition の `FEATURES` は `cpu` と検出した GPU モデル feature を表示し、汎用の `gpu` は表示しない
 
 ## Node View
 

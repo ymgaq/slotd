@@ -21,13 +21,15 @@ Typical output:
 ```text
 PARTITION | HOSTNAMES | STATE | FEATURES | GRES_USED
 cpu*      | localhost | idle  | cpu      | N/A
-gpu       | localhost | idle  | cpu,gpu  | gpu:0
+gpu       | localhost | idle  | cpu,generic_gpu | gpu:0
 ```
 
 Notes:
 
 - one row is shown per configured partition
 - the default partition is marked with `*`
+- CPU partitions show only `cpu` in `FEATURES`
+- GPU partitions show `cpu` plus detected GPU model features, and do not include the generic `gpu` label in `FEATURES`
 
 ## Node View
 

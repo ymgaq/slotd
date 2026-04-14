@@ -12,13 +12,29 @@ fn sinfo_filters_partitions_and_supports_custom_formats() {
 
     let all_output = runtime.run_checked(&["sinfo", "--noheader", "-o", "%P %N %t %f %G"]);
     assert!(
-        all_output.lines().any(|line| line.contains("cpu")),
+        all_output
+            .lines()
+            .any(|line| line.split_whitespace().next().is_some_and(|part| part.contains("cpu"))),
         "sinfo:\n{all_output}"
     );
     assert!(
-        all_output.lines().any(|line| line.contains("gpu")),
+        all_output
+            .lines()
+            .any(|line| line.split_whitespace().next().is_some_and(|part| part.contains("gpu"))),
         "sinfo:\n{all_output}"
     );
+    let cpu_line = all_output
+        .lines()
+        .find(|line| line.split_whitespace().next().is_some_and(|part| part.contains("cpu")))
+        .expect("missing cpu line");
+    assert!(cpu_line.contains("cpu"), "sinfo:\n{all_output}");
+    assert!(cpu_line.contains("N/A"), "sinfo:\n{all_output}");
+    let gpu_line = all_output
+        .lines()
+        .find(|line| line.split_whitespace().next().is_some_and(|part| part.contains("gpu")))
+        .expect("missing gpu line");
+    assert!(gpu_line.contains("cpu,"), "sinfo:\n{all_output}");
+    assert!(!gpu_line.contains("cpu,gpu"), "sinfo:\n{all_output}");
 
     let cpu_only = runtime.run_checked(&["sinfo", "-p", "cpu", "--noheader", "-o", "%P"]);
     assert_eq!(
@@ -68,6 +84,11 @@ fn sinfo_long_and_node_views_render_without_headers_when_requested() {
         lines[0].contains("localhost") || !lines[0].trim().is_empty(),
         "sinfo -N --noheader:\n{node_view}"
     );
+
+    let node_features = runtime.run_checked(&["sinfo", "-N", "--noheader", "-o", "%f"]);
+    let node_features = node_features.trim();
+    assert!(node_features.starts_with("cpu"), "sinfo -N:\n{node_features}");
+    assert!(!node_features.contains(",gpu"), "sinfo -N:\n{node_features}");
 }
 
 #[test]
