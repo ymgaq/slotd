@@ -143,13 +143,37 @@ load_existing_env_value() {
   printf '%s' "${line}"
 }
 
-if [[ -f "${env_file}" ]]; then
-  [[ -n "${features}" ]] || features="$(load_existing_env_value "SLOTD_FEATURES" "${env_file}" || true)"
-  [[ -n "${notify_cmd}" ]] || notify_cmd="$(load_existing_env_value "SLOTD_NOTIFY_CMD" "${env_file}" || true)"
-  [[ -n "${cgroup_base}" ]] || cgroup_base="$(load_existing_env_value "SLOTD_CGROUP_BASE" "${env_file}" || true)"
-fi
+is_existing_install() {
+  [[ -f "${env_file}" ]] || [[ -e "${wrapper_binary}" ]] || [[ -e "${real_binary}" ]] || [[ -e "${service_file}" ]]
+}
 
-if [[ "${uninstall}" -eq 1 ]]; then
+prompt_yes_default() {
+  local message="$1"
+  local reply
+
+  if [[ ! -t 0 ]]; then
+    echo "${message} [Y/n]: yes (default, non-interactive)" >&2
+    return 0
+  fi
+
+  read -r -p "${message} [Y/n]: " reply
+  case "${reply}" in
+    ""|[Yy]|[Yy][Ee][Ss])
+      return 0
+      ;;
+    [Nn]|[Nn][Oo])
+      return 1
+      ;;
+    *)
+      echo "error: please answer yes or no" >&2
+      return 2
+      ;;
+  esac
+}
+
+remove_installation() {
+  local remove_runtime="$1"
+
   if [[ "${skip_systemd}" -eq 0 ]] && command -v systemctl >/dev/null 2>&1; then
     systemctl --user disable --now slotd.service >/dev/null 2>&1 || true
     systemctl --user daemon-reload || true
@@ -163,9 +187,19 @@ if [[ "${uninstall}" -eq 1 ]]; then
     rm -f "${install_bin_dir}/${alias}"
   done
 
-  if [[ "${purge_runtime}" -eq 1 ]]; then
+  if [[ "${remove_runtime}" -eq 1 ]]; then
     rm -rf "${runtime_root}"
   fi
+}
+
+if [[ -f "${env_file}" ]]; then
+  [[ -n "${features}" ]] || features="$(load_existing_env_value "SLOTD_FEATURES" "${env_file}" || true)"
+  [[ -n "${notify_cmd}" ]] || notify_cmd="$(load_existing_env_value "SLOTD_NOTIFY_CMD" "${env_file}" || true)"
+  [[ -n "${cgroup_base}" ]] || cgroup_base="$(load_existing_env_value "SLOTD_CGROUP_BASE" "${env_file}" || true)"
+fi
+
+if [[ "${uninstall}" -eq 1 ]]; then
+  remove_installation "${purge_runtime}"
 
   cat <<EOF
 slotd uninstall complete.
@@ -217,6 +251,20 @@ case "${profile}" in
     exit 1
     ;;
 esac
+
+if is_existing_install; then
+  while true; do
+    prompt_yes_default "Existing slotd installation detected. Update including runtime state and reinstall everything?"
+    status=$?
+    if [[ "${status}" -eq 0 ]]; then
+      remove_installation 1
+      break
+    fi
+    if [[ "${status}" -eq 1 ]]; then
+      break
+    fi
+  done
+fi
 
 binary_src="${repo_root}/target/${profile}/slotd"
 if [[ "${skip_build}" -eq 0 ]]; then
