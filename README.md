@@ -161,6 +161,8 @@ Typical output:
 - `sinfo` shows one row per configured partition, for example `cpu` and `gpu`
 - CPU partitions show only `cpu` in `FEATURES`
 - GPU partitions show `cpu` plus detected GPU model features such as `rtx3090`
+- CPU and GPU partitions are virtual convenience views over the same local host
+- CPU capacity and memory are shared across those partitions; they are not separate resource pools
 - `squeue` is usually empty immediately after a fresh install
 - `sacct` is usually empty until you submit jobs
 

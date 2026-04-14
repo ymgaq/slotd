@@ -44,6 +44,8 @@ Rules:
 - if there are no GPUs, no GPU partition is exposed
 - if a GPU partition is selected and `--gpus` is omitted, the default GPU request is `1`
 - otherwise the default GPU request is `0`
+- CPU and GPU partitions are virtual views over one local host
+- CPU and memory capacity stay shared across partitions; only GPU visibility/defaults differ by partition
 
 ## GPU Detection
 

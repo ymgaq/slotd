@@ -30,6 +30,8 @@ gpu       | localhost | idle  | cpu,generic_gpu | gpu:0
 - default partition には `*` が付く
 - CPU partition の `FEATURES` は `cpu` のみを表示する
 - GPU partition の `FEATURES` は `cpu` と検出した GPU モデル feature を表示し、汎用の `gpu` は表示しない
+- CPU/GPU partition は同じローカルホストを見せ分けるための仮想的な区分
+- CPU 容量とメモリ容量は partition 間で共有され、別々の resource pool にはならない
 
 ## Node View
 

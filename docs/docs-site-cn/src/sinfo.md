@@ -30,6 +30,8 @@ gpu       | localhost | idle  | cpu,generic_gpu | gpu:0
 - 默认分区会标记为 `*`
 - CPU partition 的 `FEATURES` 只显示 `cpu`
 - GPU partition 的 `FEATURES` 显示 `cpu` 和检测到的 GPU 型号 feature，不显示通用 `gpu`
+- CPU/GPU 分区只是同一台本地主机上的便捷虚拟视图
+- CPU 和内存容量在这些分区之间共享，并不是彼此独立的资源池
 
 ## 节点视图
 

@@ -30,6 +30,8 @@ Notes:
 - the default partition is marked with `*`
 - CPU partitions show only `cpu` in `FEATURES`
 - GPU partitions show `cpu` plus detected GPU model features, and do not include the generic `gpu` label in `FEATURES`
+- CPU and GPU partitions are virtual views for convenience on the same host
+- CPU and memory capacity are shared across those partitions rather than split into separate pools
 
 ## Node View
 
